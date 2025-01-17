@@ -30,6 +30,7 @@ import type { AuthorizedRequest } from '../lib/api-keys';
 import { fromV2TargetState } from '../lib/legacy';
 import * as actions from './actions';
 import { v2ServiceEndpointError } from './messages';
+import { provision } from '../api-binder';
 
 export const router = express.Router();
 
@@ -574,4 +575,20 @@ router.post('/v2/journal-logs', (req, res) => {
 		journald.stdout!.unpipe();
 		res.end();
 	});
+});
+
+router.post('/v2/provision', async (_req, res) => {
+	try {
+		await provision();
+		res.status(200).json({
+			status: 'success',
+			message: 'Provisioning triggered successfully',
+		});
+	} catch (e: any) {
+		log.error(e);
+		res.status(500).json({
+			status: 'failed',
+			message: e.message,
+		});
+	}
 });

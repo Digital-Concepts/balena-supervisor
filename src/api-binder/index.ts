@@ -412,6 +412,7 @@ async function provision() {
 		return pinDevice(pinValue);
 	}
 }
+export { provision };
 
 async function provisionOrRetry(retryDelay: number): Promise<void> {
 	eventTracker.track('Device bootstrap');
