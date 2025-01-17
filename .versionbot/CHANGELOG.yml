@@ -1,4 +1,76 @@
 - commits:
+    - subject: Add support for `io.balena.update.requires-reboot`
+      hash: e416ad0daf61fba14cd8c2012c5b2f66d8fb5f4a
+      body: >
+        This label can be used by user services to indicate that a reboot is
+
+        required after the install of a service in order to fully apply an
+        update.
+      footer:
+        Change-type: minor
+        change-type: minor
+      author: Felipe Lalanne
+      nested: []
+    - subject: Move reboot breadcrumb check to device-state
+      hash: 75127c6074531fd20199ed07d6860687b4105cfb
+      body: |
+        This was on device-config before, but we'll need to set the reboot
+        breadcrumb from the application-manager as well when we introduce
+        `requires-reboot` as a label.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Refactor device-config as part of device-state
+      hash: 51f1fb0f30e04ece6a00d2d8b9420b49703a2fde
+      body: |
+        Move the device-config module to the device-state folder and export only
+        those functions that are needed elsewhere in the codebase
+
+        This moves us closer to making the device-state module the only way to
+        modify application and configuration.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 16.11.0
+  title: ""
+  date: 2025-01-14T18:15:55.879Z
+- commits:
+    - subject: Update systeminformation to v5.23.8 [SECURITY]
+      hash: 92b26c7ae2d8d329be18806abe24ab312e92db68
+      body: |
+        Update systeminformation from 5.22.7 to 5.23.8
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: balena-renovate[bot]
+      nested: []
+  version: 16.10.3
+  title: ""
+  date: 2024-12-20T20:43:23.372Z
+- commits:
+    - subject: Wait for service dependencies to be running
+      hash: 8e6c0fcad729b56e386ac27754c48c97517e293a
+      body: |
+        This fixes a regression where dependencies would only be started in
+        order and would start the dependent service if its dependency had been
+        started at some point in the past, regardless of the running condition.
+
+        This makes the behavior more consistent with docker compose where the
+        [dependency needs to be
+        running or healthy](https://github.com/docker/compose/blob/69a83d1303a103d82b05d512baf273244b4dbd94/pkg/compose/convergence.go#L441) for the service to be started.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 16.10.2
+  title: ""
+  date: 2024-12-18T18:48:52.008Z
+- commits:
     - subject: Specify `/tmp/balena|resin` directories as necessary
       hash: dc740a159b9b299b85885bc8ab65e97cc4d356a3
       body: ""

@@ -21,6 +21,8 @@ const defaultContext = {
 	downloading: [] as string[],
 	lock: null,
 	hasLeftoverLocks: false,
+	rebootBreadcrumbSet: false,
+	bootTime: new Date(Date.now() - 30 * 60 * 1000), // 30 minutes ago
 };
 
 const mockLock: Lock = {
@@ -348,7 +350,6 @@ describe('compose/app', () => {
 					target,
 				);
 
-			expect(recreateVolumeSteps).to.have.length(1);
 			expectSteps('createVolume', recreateVolumeSteps);
 
 			// Step 5: takeLock
@@ -1294,22 +1295,23 @@ describe('compose/app', () => {
 				.to.deep.include({ serviceName: 'main' });
 		});
 
-		it('should not try to start a container which has exited and has restart policy of no', async () => {
+		it('should not try to start a container which has exited', async () => {
 			// Container is a "run once" type of service so it has exitted.
 			const current = createApp({
 				services: [
 					await createService(
-						{ composition: { restart: 'no' }, running: false },
+						{ composition: { restart: 'yes' }, running: false },
 						{ state: { containerId: 'run_once' } },
 					),
 				],
+				networks: [DEFAULT_NETWORK],
 			});
 
 			// Now test that another start step is not added on this service
 			const target = createApp({
 				services: [
 					await createService(
-						{ composition: { restart: 'no' }, running: false },
+						{ composition: { restart: 'always' }, running: false },
 						{ state: { containerId: 'run_once' } },
 					),
 				],
@@ -1317,6 +1319,7 @@ describe('compose/app', () => {
 			});
 
 			const steps = current.nextStepsForAppUpdate(defaultContext, target);
+			expect(steps.length).to.equal(0);
 			expectNoStep('start', steps);
 		});
 
@@ -1449,6 +1452,83 @@ describe('compose/app', () => {
 			expect(startStep)
 				.to.have.property('target')
 				.that.deep.includes({ serviceName: 'dep' });
+
+			// we now make our current state have the 'dep' service as started...
+			const intermediate = createApp({
+				services: [
+					await createService(
+						{ appId: 1, serviceName: 'dep' },
+						{ state: { containerId: 'dep-id' } },
+					),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+
+			// we should now see a start for the 'main' service...
+			const stepsToTarget = intermediate.nextStepsForAppUpdate(
+				{ ...contextWithImages, ...{ containerIds: { dep: 'dep-id' } } },
+				target,
+			);
+			const [startMainStep] = expectSteps('start', stepsToTarget);
+			expect(startMainStep)
+				.to.have.property('target')
+				.that.deep.includes({ serviceName: 'main' });
+		});
+
+		it('should not start a container when it depends on a service that is not running', async () => {
+			const current = createApp({
+				services: [
+					await createService(
+						{
+							running: false,
+							appId: 1,
+							serviceName: 'dep',
+						},
+						{
+							state: {
+								containerId: 'dep-id',
+							},
+						},
+					),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+			const target = createApp({
+				services: [
+					await createService({
+						appId: 1,
+						serviceName: 'main',
+						composition: {
+							depends_on: ['dep'],
+						},
+					}),
+					await createService({
+						appId: 1,
+						serviceName: 'dep',
+					}),
+				],
+				networks: [DEFAULT_NETWORK],
+				isTarget: true,
+			});
+
+			const availableImages = [
+				createImage({ appId: 1, serviceName: 'main', name: 'main-image' }),
+				createImage({ appId: 1, serviceName: 'dep', name: 'dep-image' }),
+			];
+			// As service is already being installed, lock for target should have been taken
+			const contextWithImages = {
+				...defaultContext,
+				...{ availableImages },
+				lock: mockLock,
+			};
+
+			// Only one start step and it should be that of the 'dep' service
+			const stepsToIntermediate = current.nextStepsForAppUpdate(
+				contextWithImages,
+				target,
+			);
+			expectNoStep('start', stepsToIntermediate);
+			expectSteps('noop', stepsToIntermediate);
 
 			// we now make our current state have the 'dep' service as started...
 			const intermediate = createApp({
@@ -1993,7 +2073,7 @@ describe('compose/app', () => {
 				target,
 			);
 			expectNoStep('start', steps);
-			expectSteps('noop', steps, 1);
+			expectSteps('noop', steps, 1, Infinity);
 
 			// Take lock before starting once downloads complete
 			const steps2 = current.nextStepsForAppUpdate(
@@ -2032,6 +2112,128 @@ describe('compose/app', () => {
 				target,
 			);
 			expectSteps('start', steps3, 2);
+		});
+
+		it('should set the reboot breadcrumb after a service with `requires-reboot` has been installed', async () => {
+			// Container is a "run once" type of service so it has exitted.
+			const current = createApp({
+				services: [
+					await createService(
+						{
+							labels: { 'io.balena.update.requires-reboot': 'true' },
+							running: false,
+						},
+						{ state: { createdAt: new Date(), status: 'Installed' } },
+					),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+
+			// Now test that another start step is not added on this service
+			const target = createApp({
+				services: [
+					await createService({
+						labels: { 'io.balena.update.requires-reboot': 'true' },
+						running: true,
+					}),
+				],
+				isTarget: true,
+			});
+
+			const steps = current.nextStepsForAppUpdate(
+				{
+					...defaultContext,
+					rebootBreadcrumbSet: false,
+					// 30 minutes ago
+					bootTime: new Date(Date.now() - 30 * 60 * 1000),
+				},
+				target,
+			);
+			expect(steps.length).to.equal(1);
+			expectSteps('requireReboot', steps);
+		});
+
+		it('should not try to start a container with `requires-reboot` if the reboot has not taken place yet', async () => {
+			// Container is a "run once" type of service so it has exitted.
+			const current = createApp({
+				services: [
+					await createService(
+						{
+							labels: { 'io.balena.update.requires-reboot': 'true' },
+							running: false,
+						},
+						{ state: { createdAt: new Date(), status: 'Installed' } },
+					),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+
+			// Now test that another start step is not added on this service
+			const target = createApp({
+				services: [
+					await createService({
+						labels: { 'io.balena.update.requires-reboot': 'true' },
+						running: true,
+					}),
+				],
+				isTarget: true,
+			});
+
+			const steps = current.nextStepsForAppUpdate(
+				{
+					...defaultContext,
+					rebootBreadcrumbSet: true,
+					bootTime: new Date(Date.now() - 30 * 60 * 1000),
+				},
+				target,
+			);
+			expect(steps.length).to.equal(0);
+			expectNoStep('start', steps);
+		});
+
+		it('should start a container with `requires-reboot` after reboot has taken place', async () => {
+			// Container is a "run once" type of service so it has exitted.
+			const current = createApp({
+				services: [
+					await createService(
+						{
+							labels: { 'io.balena.update.requires-reboot': 'true' },
+							running: false,
+						},
+						// Container was created 5 minutes ago
+						{
+							state: {
+								createdAt: new Date(Date.now() - 5 * 60 * 1000),
+								status: 'Installed',
+							},
+						},
+					),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+
+			// Now test that another start step is not added on this service
+			const target = createApp({
+				services: [
+					await createService({
+						labels: { 'io.balena.update.requires-reboot': 'true' },
+						running: true,
+					}),
+				],
+				isTarget: true,
+			});
+
+			const steps = current.nextStepsForAppUpdate(
+				{
+					...defaultContext,
+					rebootBreadcrumbSet: true,
+					// Reboot just happened
+					bootTime: new Date(),
+				},
+				target,
+			);
+			expect(steps.length).to.equal(1);
+			expectSteps('start', steps);
 		});
 	});
 
