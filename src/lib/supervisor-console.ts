@@ -31,19 +31,22 @@ const maxLevelLength = _(levels)
 const uncolorize = winston.format.uncolorize();
 
 const formatter = winston.format.printf((args) => {
-	const { level, message } = args;
+	const { level, message, timestamp } = args;
 	const { level: strippedLevel } = uncolorize.transform(args, {
 		level: true,
 		message: true,
 	}) as TransformableInfo;
-	return `[${level}]${_.repeat(
+	return `[${timestamp}] [${level}]${_.repeat(
 		' ',
 		maxLevelLength! - strippedLevel.length + 1,
 	)}${message}`;
 });
 
 export const winstonLog = winston.createLogger({
-	format: winston.format.combine(winston.format.colorize(), formatter),
+	format: winston.format.combine(
+		winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+		winston.format.colorize(), 
+		formatter),
 	transports: [new winston.transports.Console()],
 	// In the future we can reduce this logging level in
 	// certain scenarios, but for now we don't want to ignore
