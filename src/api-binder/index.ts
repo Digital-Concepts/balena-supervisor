@@ -411,7 +411,32 @@ async function provision() {
 		return pinDevice(pinValue);
 	}
 }
-export { provision };
+
+async function reprovision() {
+	if (!balenaApi) {
+		throw new InternalInconsistencyError(
+			'Attempting to re-provision a device without an initialized API client',
+		);
+	}
+
+	const opts = await config.get('provisioningOptions');
+	await apiHelper.reprovision(balenaApi, opts);
+
+	// Now check if we need to pin the device
+	const pinValue = await config.get('pinDevice');
+
+	if (pinValue != null) {
+		if (pinValue.app == null || pinValue.commit == null) {
+			log.error(
+				`Malformed pinDevice fields in supervisor database: ${pinValue}`,
+			);
+			return;
+		}
+		log.info('Attempting to pin device to preloaded release...');
+		return pinDevice(pinValue);
+	}
+}
+export { reprovision };
 
 async function provisionOrRetry(retryDelay: number): Promise<void> {
 	eventTracker.track('Device bootstrap');

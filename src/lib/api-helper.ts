@@ -181,13 +181,90 @@ export const provision = async (
 	opts: KeyExchangeOpts,
 ) => {
 	await config.initialized();
-
 	let device: Device | null = null;
 
 	if (
 		opts.registered_at == null ||
 		opts.deviceId == null ||
 		opts.provisioningApiKey != null
+	) {
+		if (opts.registered_at != null && opts.deviceId == null) {
+			log.debug(
+				'Device is registered but no device id available, attempting key exchange',
+			);
+
+			device = await exchangeKeyAndGetDeviceOrRegenerate(balenaApi, opts);
+		} else if (opts.registered_at == null) {
+			if (opts.provisioningApiKey == null) {
+				throw new Error('Cannot provision without a provisioning api key');
+			}
+			if (opts.applicationId == null) {
+				throw new Error('Cannot provision without an application id');
+			}
+			if (opts.uuid == null) {
+				throw new Error('Cannot provision without a uuid');
+			}
+			log.info('New device detected. Provisioning...');
+			try {
+				device = await Bluebird.resolve(
+					deviceRegister.register({
+						applicationId: opts.applicationId,
+						uuid: opts.uuid,
+						deviceType: opts.deviceType,
+						deviceApiKey: opts.deviceApiKey,
+						provisioningApiKey: opts.provisioningApiKey,
+						apiEndpoint: opts.apiEndpoint,
+						supervisorVersion: opts.supervisorVersion,
+						osVersion: opts.osVersion,
+						osVariant: opts.osVariant,
+						macAddress: opts.macAddress,
+					}),
+				).timeout(opts.apiTimeout);
+			} catch (err) {
+				if (
+					err instanceof deviceRegister.ApiError &&
+					isHttpConflictError(err.response)
+				) {
+					log.debug('UUID already registered, trying a key exchange');
+					device = await exchangeKeyAndGetDeviceOrRegenerate(balenaApi, opts);
+				} else {
+					throw err;
+				}
+			}
+			opts.registered_at = Date.now();
+		} else if (opts.provisioningApiKey != null) {
+			log.debug(
+				'Device is registered but we still have an apiKey, attempting key exchange',
+			);
+			device = await exchangeKeyAndGetDevice(balenaApi, opts);
+		}
+
+		if (!device) {
+			throw new FailedToProvisionDeviceError();
+		}
+
+		const { id } = device;
+		balenaApi.passthrough.headers.Authorization = `Bearer ${opts.deviceApiKey}`;
+
+		const configToUpdate = {
+			registered_at: opts.registered_at,
+			deviceId: id,
+			apiKey: null,
+		};
+
+		await config.set(configToUpdate);
+		eventTracker.track('Device bootstrap success');
+	}
+
+	return device;
+};
+export const reprovision = async ( balenaApi: PinejsClientRequest, opts: KeyExchangeOpts,) => {
+	await config.initialized();
+	let device: Device | null = null;
+	opts.provisioningApiKey = '';
+	opts.registered_at = null;
+	if (
+		opts.deviceId == null
 	) {
 		if (opts.registered_at != null && opts.deviceId == null) {
 			log.debug(
