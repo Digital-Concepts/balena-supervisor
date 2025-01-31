@@ -258,14 +258,15 @@ export const provision = async (
 
 	return device;
 };
-export const reprovision = async ( balenaApi: PinejsClientRequest, opts: KeyExchangeOpts,) => {
+export const reprovision = async (
+	balenaApi: PinejsClientRequest,
+	opts: KeyExchangeOpts,
+) => {
 	await config.initialized();
 	let device: Device | null = null;
 	opts.provisioningApiKey = '';
 	opts.registered_at = null;
-	if (
-		opts.deviceId == null
-	) {
+	if (opts.deviceId == null) {
 		if (opts.registered_at != null && opts.deviceId == null) {
 			log.debug(
 				'Device is registered but no device id available, attempting key exchange',

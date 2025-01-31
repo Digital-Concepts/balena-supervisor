@@ -577,19 +577,19 @@ router.post('/v2/journal-logs', (req, res) => {
 });
 
 router.get('/v2/reprovision', async (_req: Request, res: Response) => {
-    try {
-        await reprovision();
-        res.status(200).json({
-            status: 'success',
-            message: 'Re-provisioning triggered successfully',
-        });
-    } catch (e: any) {
-        log.error(e);
-        res.status(500).json({
-            status: 'failed',
-            message: e.message,
-        });
-    }
+	try {
+		await reprovision();
+		res.status(200).json({
+			status: 'success',
+			message: 'Re-provisioning triggered successfully',
+		});
+	} catch (e: any) {
+		log.error(e);
+		res.status(500).json({
+			status: 'failed',
+			message: e.message,
+		});
+	}
 });
 
 export default router;

@@ -45,8 +45,9 @@ const formatter = winston.format.printf((args) => {
 export const winstonLog = winston.createLogger({
 	format: winston.format.combine(
 		winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-		winston.format.colorize(), 
-		formatter),
+		winston.format.colorize(),
+		formatter,
+	),
 	transports: [new winston.transports.Console()],
 	// In the future we can reduce this logging level in
 	// certain scenarios, but for now we don't want to ignore

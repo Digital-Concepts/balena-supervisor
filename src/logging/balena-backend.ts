@@ -148,17 +148,20 @@ export class BalenaLogBackend extends LogBackend {
 				log.error(
 					'LogBackend: server responded with status code:',
 					res.statusCode,
-					'and we reached the total delay of:',
+					'and we reached the total delay of: ',
 					totalDelay,
-					'we had:',
+					' we had: ',
 					this.setupFailures,
-					'setup failures, so lets just re-provision the device',
+					' setup failures, so lets just re-provision the device',
 				);
 				reprovision();
 			}
 			log.error(
 				'LogBackend: server responded with status code:',
 				res.statusCode,
+				'we had:',
+				this.setupFailures,
+				' setup failures',
 			);
 			setupFailed();
 		});
