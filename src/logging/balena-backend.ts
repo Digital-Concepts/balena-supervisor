@@ -141,27 +141,9 @@ export class BalenaLogBackend extends LogBackend {
 		// only reason for the server to prematurely respond is to
 		// communicate an error. So teardown the connection immediately
 		this.req.on('response', (res) => {
-			// This is here in case the server has to revert to a backup and
-			// the device cant reconnect for some reason.
-			// This is probably a bit to broad and should be more specific.
-			if (totalDelay === alreadyDelayedBy && this.setupFailures > 20) {
-				log.error(
-					'LogBackend: server responded with status code:',
-					res.statusCode,
-					'and we reached the total delay of: ',
-					totalDelay,
-					' we had: ',
-					this.setupFailures,
-					' setup failures, so lets just re-provision the device',
-				);
-				reprovision();
-			}
 			log.error(
 				'LogBackend: server responded with status code:',
 				res.statusCode,
-				'we had:',
-				this.setupFailures,
-				' setup failures',
 			);
 			setupFailed();
 		});
@@ -172,6 +154,7 @@ export class BalenaLogBackend extends LogBackend {
 			log.error('LogBackend: unexpected error:', err);
 			setupFailed();
 		});
+
 
 		// Immediately flush the headers. This gives a chance to the server to
 		// respond with potential errors such as 401 authentication error

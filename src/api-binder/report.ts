@@ -18,6 +18,7 @@ import { getRequestInstance } from '../lib/request';
 import { shallowDiff, prune, empty } from '../lib/json';
 import { pathOnRoot } from '../lib/host-utils';
 import { touch, writeAndSyncFile } from '../lib/fs-utils';
+import { reprovision } from '../api-binder';
 
 let lastReport: DeviceState = {};
 let lastReportTime: number = -Infinity;
@@ -178,15 +179,30 @@ async function getCache(): Promise<DeviceState> {
 	}
 }
 
+async function handle401Error(error: StatusError) {
+	log.error(
+		`Unauthorized access! Status code: ${error.statusCode} - message:`,
+		error?.message ?? error,
+	);
+	try {
+		await reprovision();
+	} catch (e: any) {
+		log.error(e);
+	}
+}
+
 function handleRetry(retryInfo: OnFailureInfo) {
 	if (retryInfo.error instanceof StatusError) {
-		// We don't want these errors to be classed as a report error, as this will cause
-		// the watchdog to kill the supervisor - and killing the supervisor will
-		// not help in this situation
-		log.error(
-			`Device state report failure! Status code: ${retryInfo.error.statusCode} - message:`,
-			retryInfo.error?.message ?? retryInfo.error,
-		);
+		if (retryInfo.error.statusCode === 401) {
+			// Fire and forget the 401 handler
+			void handle401Error(retryInfo.error);
+		} else {
+			// Handle other StatusError cases
+			log.error(
+				`Device state report failure! Status code: ${retryInfo.error.statusCode} - message:`,
+				retryInfo.error?.message ?? retryInfo.error,
+			);
+		}
 	} else {
 		eventTracker.track('Device state report failure', {
 			error: retryInfo.error,

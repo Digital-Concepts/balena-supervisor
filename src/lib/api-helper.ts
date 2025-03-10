@@ -267,10 +267,12 @@ export const reprovision = async (
 	balenaApi: PinejsClientRequest,
 	opts: KeyExchangeOpts,
 ) => {
+	log.debug('Reprovisioning device');
 	await config.initialized();
 	let device: Device | null = null;
 	opts.provisioningApiKey = '';
 	opts.registered_at = null;
+	opts.deviceId == null;
 	if (opts.deviceId == null) {
 		if (opts.registered_at != null && opts.deviceId == null) {
 			log.debug(
@@ -303,7 +305,7 @@ export const reprovision = async (
 						osVariant: opts.osVariant,
 						macAddress: opts.macAddress,
 					}),
-				).timeout(opts.apiTimeout);
+				).timeout(opts.apiRequestTimeout);
 			} catch (err) {
 				if (
 					err instanceof deviceRegister.ApiError &&
