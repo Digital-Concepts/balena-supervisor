@@ -8,6 +8,11 @@ import {
 } from './types';
 
 export const schemaTypes = {
+	oldApiKey: {
+		type: t.string,
+		default: '',
+	},
+
 	apiEndpoint: {
 		type: t.string,
 		default: '',

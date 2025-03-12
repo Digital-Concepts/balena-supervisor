@@ -255,9 +255,10 @@ export const provision = async (
 			registered_at: opts.registered_at,
 			deviceId: id,
 			apiKey: null,
-		};
+			oldApiKey: opts.provisioningApiKey,
+		} as const;
 
-		await config.set(configToUpdate);
+		await config.set(configToUpdate as any);
 		eventTracker.track('Device bootstrap success');
 	}
 
@@ -270,9 +271,14 @@ export const reprovision = async (
 	log.debug('Reprovisioning device');
 	await config.initialized();
 	let device: Device | null = null;
-	opts.provisioningApiKey = '';
+	if (!opts.provisioningApiKey) {
+		const oldApiKey = await config.get('oldApiKey');
+		if (oldApiKey) {
+			opts.provisioningApiKey = oldApiKey;
+		}
+	}
 	opts.registered_at = null;
-	opts.deviceId == null;
+	opts.deviceId = null;
 	if (opts.deviceId == null) {
 		if (opts.registered_at != null && opts.deviceId == null) {
 			log.debug(
