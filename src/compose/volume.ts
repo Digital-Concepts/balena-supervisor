@@ -10,6 +10,9 @@ import type { LabelObject } from '../types';
 import * as logger from '../logging';
 import * as ComposeUtils from './utils';
 
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
 import type {
 	Volume as VolumeIface,
 	VolumeConfig,
@@ -17,6 +20,8 @@ import type {
 } from './types';
 
 export type Volume = VolumeIface;
+
+const execAsync = promisify(exec);
 
 class VolumeImpl implements Volume {
 	private constructor(
@@ -103,9 +108,40 @@ class VolumeImpl implements Volume {
 		});
 
 		try {
+			// Move the data from the volume to a temp directory before removing old containers
+			const volumeName = this.appId + '_' + this.name;
+			const fullPath = '/mnt/data/docker/volumes/';
+			await execAsync(`mkdir -p "${fullPath}${this.name}"`);
+			const moveCmd = `
+            if [ -d "${fullPath}${volumeName}/_data" ] && [ "$(ls -A ${fullPath}${volumeName}/_data)" ]; then
+                mv ${fullPath}${volumeName}/_data/* ${fullPath}${this.name}/
+                mv ${fullPath}${volumeName}/_data/* ${fullPath}${this.name}/ 2>/dev/null || true
+            fi
+        `;
+			await execAsync(moveCmd);
+
 			await docker
 				.getVolume(Volume.generateDockerName(this.appId, this.name))
 				.remove();
+		} catch (e) {
+			logger.logSystemEvent(LogTypes.removeVolumeError, {
+				volume: { name: this.name, appId: this.appId },
+				error: e,
+			});
+		}
+		try {
+			// With the old containers gone we should be able to migrate the data back. Then delete tmp directory
+			const tempName = this.name;
+			const fullPath = '/mnt/data/docker/volumes/';
+			const moveBackCmd = `
+			if [ -d "${fullPath}${tempName}" ] && [ "$(ls -A ${fullPath}${tempName})" ]; then
+				mv ${fullPath}${tempName}/* ${fullPath}*_${tempName}/_data/
+				mv ${fullPath}${tempName}/* ${fullPath}*_${tempName}/_data/ 2>/dev/null || true
+			fi
+
+			rm -rf ${fullPath}${tempName}
+			`;
+			await execAsync(moveBackCmd);
 		} catch (e) {
 			logger.logSystemEvent(LogTypes.removeVolumeError, {
 				volume: { name: this.name, appId: this.appId },
