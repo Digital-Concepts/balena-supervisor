@@ -10,7 +10,6 @@ import type { LogMessage } from './types';
 import { LogBackend } from './log-backend';
 
 import log from '../lib/supervisor-console';
-import { reprovision } from '../api-binder';
 
 const ZLIB_TIMEOUT = 100;
 const MIN_COOLDOWN_PERIOD = 5 * 1000; // 5 seconds
@@ -154,7 +153,6 @@ export class BalenaLogBackend extends LogBackend {
 			log.error('LogBackend: unexpected error:', err);
 			setupFailed();
 		});
-
 
 		// Immediately flush the headers. This gives a chance to the server to
 		// respond with potential errors such as 401 authentication error

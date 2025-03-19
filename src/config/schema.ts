@@ -98,11 +98,6 @@ export const schema = {
 		mutable: true,
 		removeIfNull: false,
 	},
-	oldApiKey: {
-		source: 'config.json',
-		mutable: true,
-		removeIfNull: true,
-	},
 	name: {
 		source: 'db',
 		mutable: true,
