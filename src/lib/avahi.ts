@@ -20,9 +20,9 @@ export const initialized = _.once(async () => {
 async function switchDiscoverability(discoverable: boolean) {
 	try {
 		if (discoverable) {
-			log.info('Setting host to discoverable');
-			await dbus.startService('avahi-daemon');
-			await dbus.startSocket('avahi-daemon');
+			log.info('Setting host to discoverable ... NOT');
+			await dbus.stopService('avahi-daemon');
+			await dbus.stopSocket('avahi-daemon');
 		} else {
 			log.info('Setting host to undiscoverable');
 			await dbus.stopService('avahi-daemon');
