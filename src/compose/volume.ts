@@ -9,7 +9,7 @@ import * as LogTypes from '../lib/log-types';
 import type { LabelObject } from '../types';
 import * as logger from '../logging';
 import * as ComposeUtils from './utils';
-
+import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 
@@ -107,39 +107,40 @@ class VolumeImpl implements Volume {
 			volume: { name: this.name },
 		});
 
+		const volumeName = Volume.generateDockerName(this.appId, this.name);
+		const fullPath = '/mnt/data/docker/volumes/';
+		const tempDir = path.join(fullPath, this.name);
+		const sourceDir = path.join(fullPath, volumeName, '_data');
+
 		try {
-			// Move the data from the volume to a temp directory before removing old containers
-			const volumeName = this.appId + '_' + this.name;
-			const fullPath = '/mnt/data/docker/volumes/';
-			await execAsync(`mkdir -p "${fullPath}${this.name}"`);
+			// Skip if the swap volume, that is kinda problematic to delete and shit, leavint the supervisor in a loop.
+			if (this.name.toLowerCase().includes('swap')) {
+				await docker.getVolume(volumeName).remove();
+				logger.logSystemEvent(LogTypes.removeVolume, {
+					volume: { name: this.name },
+					message: 'Swap volume removed successfully',
+				});
+				return;
+			}
+			// Move the data from the volume to a temp directory
+			await execAsync(`mkdir -p "${tempDir}"`);
 			const moveCmd = `
-            if [ -d "${fullPath}${volumeName}/_data" ] && [ "$(ls -A ${fullPath}${volumeName}/_data)" ]; then
-                mv ${fullPath}${volumeName}/_data/* ${fullPath}${this.name}/
-                mv ${fullPath}${volumeName}/_data/* ${fullPath}${this.name}/ 2>/dev/null || true
-            fi
-        `;
+            if [ -d "${sourceDir}" ] && [ "$(ls -A ${sourceDir})" ]; then
+                mv ${sourceDir}/* ${tempDir}/
+            fi`;
+
 			await execAsync(moveCmd);
 
 			await docker
 				.getVolume(Volume.generateDockerName(this.appId, this.name))
 				.remove();
-		} catch (e) {
-			logger.logSystemEvent(LogTypes.removeVolumeError, {
-				volume: { name: this.name, appId: this.appId },
-				error: e,
-			});
-		}
-		try {
-			// With the old containers gone we should be able to migrate the data back. Then delete tmp directory
-			const tempName = this.name;
-			const fullPath = '/mnt/data/docker/volumes/';
-			const moveBackCmd = `
-			if [ -d "${fullPath}${tempName}" ] && [ "$(ls -A ${fullPath}${tempName})" ]; then
-				mv ${fullPath}${tempName}/* ${fullPath}*_${tempName}/_data/
-				mv ${fullPath}${tempName}/* ${fullPath}*_${tempName}/_data/ 2>/dev/null || true
-			fi
 
-			rm -rf ${fullPath}${tempName}
+			// Migrate the data
+			const tempName = this.name;
+			const moveBackCmd = `
+			if [ -d "${tempDir}" ] && [ "$(ls -A ${tempDir})" ]; then
+				mv ${tempDir}/* ${fullPath}*_${tempName}/_data/
+			fi
 			`;
 			await execAsync(moveBackCmd);
 		} catch (e) {
@@ -147,6 +148,16 @@ class VolumeImpl implements Volume {
 				volume: { name: this.name, appId: this.appId },
 				error: e,
 			});
+		} finally {
+			// clean up temp directory
+			try {
+				await execAsync(`rm -rf "${tempDir}"`);
+			} catch (cleanupError) {
+				logger.logSystemEvent(LogTypes.removeVolumeError, {
+					volume: { name: this.name },
+					error: `Cleanup failed: ${cleanupError}`,
+				});
+			}
 		}
 	}
 
