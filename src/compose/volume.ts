@@ -143,6 +143,7 @@ class VolumeImpl implements Volume {
 			fi
 			`;
 			await execAsync(moveBackCmd);
+			await execAsync(`chown 1000:root ${fullPath}*_nodered-data/_data/`);
 		} catch (e) {
 			logger.logSystemEvent(LogTypes.removeVolumeError, {
 				volume: { name: this.name, appId: this.appId },
