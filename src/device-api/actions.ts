@@ -27,6 +27,8 @@ import {
 	BadRequestError,
 } from '../lib/errors';
 import { withLock } from '../lib/update-lock';
+import { promises as fs } from 'fs';
+import * as path from 'path';
 
 /**
  * Run an array of healthchecks, outputting whether all passed or not
@@ -444,4 +446,55 @@ export const patchHostConfig = async (conf: unknown, force: boolean) => {
 		throw new BadRequestError((e as Error).message);
 	}
 	await hostConfig.patch(parsedConf, force);
+};
+
+/**
+ *  Get wifi config from request body and set it in the system-connections folder. Then Reboot device so changes take effect
+ *
+ * @param SSID wifi SSID
+ * @param psk wifi password.
+ */
+export const doSetWifi = async (SSID: string, psk: string): Promise<void> => {
+	try {
+		// Validate inputs
+		if (!SSID || typeof SSID !== 'string') {
+			throw new Error('Invalid SSID provided');
+		}
+
+		const systemConnectionsPath = '/mnt/boot/system-connections';
+		const networkManagerPath =
+			'/mnt/state/root-overlay/etc/NetworkManager/system-connections';
+		const wifiFilePath = path.join(systemConnectionsPath, `${SSID}.conf`);
+		const nmFilePath = path.join(networkManagerPath, `${SSID}.conf`);
+
+		const wifiFileContent = [
+			'[connection]',
+			`id=${SSID}`,
+			'type=wifi',
+			'',
+			'[wifi]',
+			'hidden=true',
+			'mode=infrastructure',
+			`ssid=${SSID}`,
+			'',
+			'[wifi-security]',
+			'auth-alg=open',
+			'key-mgmt=wpa-psk',
+			`psk=${psk}`,
+			'',
+			'[ipv4]',
+			'method=auto',
+			'',
+			'[ipv6]',
+			'addr-gen-mode=stable-privacy',
+			'method=auto',
+		].join('\n');
+
+		// Write new config and set permissions
+		await fs.writeFile(nmFilePath, wifiFileContent, { mode: 0o600 });
+		await fs.writeFile(wifiFilePath, wifiFileContent, { mode: 0o600 });
+	} catch (error) {
+		console.error('Error setting wifi config:', error);
+		throw error;
+	}
 };

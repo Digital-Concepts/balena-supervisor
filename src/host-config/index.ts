@@ -11,6 +11,7 @@ import * as applicationManager from '../compose/application-manager';
 import { pathOnRoot } from '../lib/host-utils';
 import log from '../lib/supervisor-console';
 import * as updateLock from '../lib/update-lock';
+import * as dbus from '../lib/dbus';
 
 const hostnamePath = pathOnRoot('/etc/hostname');
 
@@ -30,6 +31,7 @@ async function setHostname(val: string) {
 	// the OS config-json service to restart the necessary services
 	// so the change gets reflected on containers
 	await config.set({ hostname });
+	await dbus.reboot();
 }
 
 export function parse(

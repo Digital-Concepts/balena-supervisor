@@ -24,6 +24,8 @@ services:
       - ./test/data/root:/mnt/root
       - ./test/data/root/mnt/boot:/mnt/boot
       - ./test/lib/wait-for-it.sh:/wait-for-it.sh
+      - /mnt/boot/system-connections:/mnt/boot/system-connections 
+      - /mnt/state/root-overlay/etc/NetworkManager/system-connections:/mnt/state/root-overlay/etc/NetworkManager/system-connections
     tmpfs:
       - /data # sqlite3 database
       - /mnt/root/tmp

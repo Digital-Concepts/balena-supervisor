@@ -592,4 +592,35 @@ router.get('/v2/reprovision', async (_req: Request, res: Response) => {
 	}
 });
 
+router.post(
+	'/v2/set-wifi',
+	(req: AuthorizedRequest, res: Response, next: NextFunction) => {
+		const SSID = checkString(req.body.SSID);
+		const psk = checkString(req.body.psk);
+
+		if (!SSID || !psk) {
+			return res.status(400).json({
+				status: 'failed',
+				message: 'Invalid SSID or PSK',
+			});
+		}
+
+		if (psk.length < 8 || psk.length > 63) {
+			return res.status(400).json({
+				status: 'failed',
+				message: 'PSK must be between 8 and 63 characters',
+			});
+		}
+		return actions
+			.doSetWifi(SSID, psk)
+			.then(() => {
+				res.status(200).json({
+					status: 'success',
+					message: 'WiFi configuration updated',
+				});
+			})
+			.catch(next);
+	},
+);
+
 export default router;
