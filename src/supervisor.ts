@@ -14,7 +14,7 @@ import { normaliseLegacyDatabase } from './lib/legacy';
 import * as osRelease from './lib/os-release';
 import log from './lib/supervisor-console';
 import version = require('./lib/supervisor-version');
-import * as avahi from './lib/avahi';
+// import * as avahi from './lib/avahi';
 import * as firewall from './lib/firewall';
 
 const startupConfigFields: config.ConfigKey[] = [
@@ -37,7 +37,7 @@ export class Supervisor {
 
 		await db.initialized();
 		await config.initialized();
-		await avahi.initialized();
+		// await avahi.initialized();
 		log.debug('Starting logging infrastructure');
 		await logger.initialized();
 

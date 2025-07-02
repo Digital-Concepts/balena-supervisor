@@ -1,20 +1,25 @@
 import * as config from '../config';
 import * as dbus from './dbus';
-
 import _ from 'lodash';
-
 import log from './supervisor-console';
 
 export const initialized = _.once(async () => {
 	await config.initialized();
 
-	config.on('change', (conf) => {
+	const handleDiscoverability = async (conf: any) => {
 		if (conf.hostDiscoverability != null) {
-			void switchDiscoverability(conf.hostDiscoverability);
+			try {
+				await switchDiscoverability(conf.hostDiscoverability);
+			} catch (err) {
+				log.error('Failed to switch discoverability:', err);
+			}
 		}
-	});
+	};
+	config.on('change', handleDiscoverability);
 
-	await switchDiscoverability(await config.get('hostDiscoverability'));
+	return () => {
+		config.removeListener('change', handleDiscoverability);
+	};
 });
 
 async function switchDiscoverability(discoverable: boolean) {

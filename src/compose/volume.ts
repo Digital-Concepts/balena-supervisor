@@ -113,13 +113,31 @@ class VolumeImpl implements Volume {
 		const sourceDir = path.join(fullPath, volumeName, '_data');
 
 		try {
-			// Skip if the swap volume, that is kinda problematic to delete and shit, leavint the supervisor in a loop.
+			// the swap volume needs some extra touching to get rid off.
 			if (this.name.toLowerCase().includes('swap')) {
-				await docker.getVolume(volumeName).remove();
-				logger.logSystemEvent(LogTypes.removeVolume, {
-					volume: { name: this.name },
-					message: 'Swap volume removed successfully',
-				});
+				try {
+					// First try to deactivate the swap
+					await execAsync(
+						`nsenter -t 1 -m sh -c 'swapoff "${sourceDir}/swap" || true'`,
+					);
+
+					// Remove the swap file
+					await execAsync(`nsenter -t 1 -m sh -c 'rm -f "${sourceDir}/swap"'`);
+
+					// Now it's safe to remove the volume
+					await docker.getVolume(volumeName).remove();
+
+					logger.logSystemEvent(LogTypes.removeVolume, {
+						volume: { name: this.name },
+						message: '++ Swap Cogitator Purged ++',
+					});
+				} catch (swapError) {
+					logger.logSystemEvent(LogTypes.removeVolumeError, {
+						volume: { name: this.name },
+						error: `Failed to remove swap: ${swapError}`,
+					});
+					throw swapError;
+				}
 				return;
 			}
 			// Move the data from the volume to a temp directory
