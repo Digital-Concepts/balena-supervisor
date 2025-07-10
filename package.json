@@ -1,7 +1,7 @@
 {
   "name": "balena-supervisor",
   "description": "This is balena's Supervisor, a program that runs on IoT devices and has the task of running user Apps (which are Docker containers), and updating them as the balena API informs it to.",
-  "version": "17.0.2",
+  "version": "17.1.1",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -40,7 +40,7 @@
   },
   "devDependencies": {
     "@balena/compose": "^6.0.0",
-    "@balena/contrato": "^0.12.0",
+    "@balena/contrato": "^0.13.0",
     "@balena/es-version": "^1.0.3",
     "@balena/lint": "^8.0.2",
     "@balena/sbvr-types": "^9.1.0",
@@ -84,7 +84,7 @@
     "copy-webpack-plugin": "^12.0.0",
     "deep-object-diff": "1.1.0",
     "docker-delta": "^4.1.0",
-    "docker-progress": "^5.2.4",
+    "docker-progress": "^5.3.1",
     "dockerode": "^4.0.2",
     "duration-js": "^4.0.0",
     "express": "^4.21.2",
@@ -123,7 +123,7 @@
     "sinon-chai": "^3.7.0",
     "strict-event-emitter-types": "^2.0.0",
     "supertest": "^7.0.0",
-    "systeminformation": "^5.25.11",
+    "systeminformation": "^5.27.0",
     "tar-stream": "^3.1.7",
     "terser-webpack-plugin": "^5.3.11",
     "ts-loader": "^9.5.2",
@@ -137,6 +137,6 @@
     "yargs": "^17.7.2"
   },
   "versionist": {
-    "publishedAt": "2025-04-02T20:16:10.284Z"
+    "publishedAt": "2025-06-09T13:58:34.624Z"
   }
 }
