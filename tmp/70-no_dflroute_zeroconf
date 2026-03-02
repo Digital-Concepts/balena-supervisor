@@ -1,0 +1,26 @@
+TS=`date +%y%m%d%H%M%S,%N`
+
+if [ "$reason" = "IPV4LL" ]; then
+	if [ "$interface" = "eth0" ]; then
+		if [ -n "`echo $new_ip_address | grep ^169.254`" ]; then
+			route del default eth0
+			
+			if [ -n "`ifconfig | grep wlan0`" ]; then
+				ifup wlan0
+				
+				# check if this script was running too often - then disable eth0
+				logfile=urgs_`date +%y%m%d%H%M`
+				logdir=/tmp/no_dflroute_zeroconf
+
+				mkdir -p $logdir
+				touch $logdir/$logfile
+				ls -1 $logdir/* | grep urgs | grep -v $logfile | xargs --no-run-if-empty rm -f
+				echo $TS >> $logdir/$logfile
+				if [ `cat $logdir/$logfile | wc -l` -gt 10 ]; then
+					ifconfig eth0 down
+				fi
+			fi
+		fi
+	fi
+fi
+#17.1.5
