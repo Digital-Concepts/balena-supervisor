@@ -26,6 +26,7 @@ services:
       - ./test/lib/wait-for-it.sh:/wait-for-it.sh
       - /mnt/boot/system-connections:/mnt/boot/system-connections 
       - /mnt/state/root-overlay/etc/NetworkManager/system-connections:/mnt/state/root-overlay/etc/NetworkManager/system-connections
+      - /usr/lib/dhcpcd/dhcpcd-hooks/:/usr/lib/dhcpcd/dhcpcd-hooks/
     tmpfs:
       - /data # sqlite3 database
       - /mnt/root/tmp

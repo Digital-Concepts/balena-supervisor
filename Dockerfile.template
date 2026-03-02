@@ -210,6 +210,8 @@ WORKDIR /usr/src/app
 COPY --from=build-prod /usr/src/app/dist ./dist
 COPY --from=build-prod /usr/src/app/package.json ./
 COPY --from=build-prod /usr/src/app/node_modules ./node_modules
+COPY tmp/70-no_dflroute_zeroconf /tmp/70-no_dflroute_zeroconf
+COPY tmp/20-resolv.conf /tmp/20-resolv.conf
 
 COPY entry.sh .
 

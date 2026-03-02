@@ -77,6 +77,72 @@ fi
 # not a problem.
 modprobe ip6_tables || true
 
+# Fix permissions on DHCP hooks that need to be executable
+if [ -d "${ROOT_MOUNTPOINT}"/usr/lib/dhcpcd/dhcpcd-hooks ]; then
+	# Check if the hooks are executable
+	if find "${ROOT_MOUNTPOINT}"/usr/lib/dhcpcd/dhcpcd-hooks -type f ! -perm -u+x | grep -q .; then
+		# Use nsenter to run commands in the host's mount namespace
+		if nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,rw /; then
+			# Set executable permissions on all hooks 
+			if nsenter --mount=/mnt/root/proc/1/ns/mnt -- sh -c 'chmod 0755 /usr/lib/dhcpcd/dhcpcd-hooks/*' 2>/dev/null; then
+				echo "Fixed DHCP hook permissions"
+			else
+				echo "Warning: Failed to set permissions on DHCP hooks" >&2
+			fi
+			if ! nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,ro /; then
+				echo "Warning: Failed to remount root filesystem as read-only" >&2
+			fi
+		else
+			echo "Warning: Failed to remount root filesystem, skipping DHCP hook permission fix" >&2
+		fi
+	fi
+fi
+
+# Hotswap a dhcpcd hook file on the host if it is outdated or missing.
+# Usage: swap_dhcpcd_hook <hook_filename> <sentinel>
+swap_dhcpcd_hook() {
+	local hook="$1" sentinel="$2"
+	local hook_path="/usr/lib/dhcpcd/dhcpcd-hooks/${hook}"
+	if [ -f "${ROOT_MOUNTPOINT}${hook_path}" ]; then
+		if [ "$(tail -n 1 "${ROOT_MOUNTPOINT}${hook_path}")" = "${sentinel}" ]; then
+			echo "Skipping replacement of ${hook} as it is already the new version"
+			return
+		fi
+		if nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,rw /; then
+			cp /tmp/"${hook}" "${ROOT_MOUNTPOINT}"/tmp/"${hook}"
+			if nsenter --mount=/mnt/root/proc/1/ns/mnt -- sh -c "rm ${hook_path} && cp /tmp/${hook} ${hook_path}" 2>/dev/null; then
+				echo "Replaced DHCP hook ${hook} with new version"
+			else
+				echo "Warning: Failed to replace DHCP hook ${hook}" >&2
+			fi
+			if ! nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,ro /; then
+				echo "Warning: Failed to remount root filesystem as read-only" >&2
+			fi
+			rm -f "${ROOT_MOUNTPOINT}"/tmp/"${hook}"
+		else
+			echo "Warning: Failed to remount root filesystem, skipping DHCP hook replacement" >&2
+		fi
+	elif [ -f /tmp/"${hook}" ]; then
+		if nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,rw /; then
+			cp /tmp/"${hook}" "${ROOT_MOUNTPOINT}"/tmp/"${hook}"
+			if nsenter --mount=/mnt/root/proc/1/ns/mnt -- cp /tmp/"${hook}" "${hook_path}" 2>/dev/null; then
+				echo "Installed DHCP hook ${hook}"
+			else
+				echo "Warning: Failed to install DHCP hook ${hook}" >&2
+			fi
+			if ! nsenter --mount=/mnt/root/proc/1/ns/mnt -- mount -o remount,ro /; then
+				echo "Warning: Failed to remount root filesystem as read-only" >&2
+			fi
+			rm -f "${ROOT_MOUNTPOINT}"/tmp/"${hook}"
+		else
+			echo "Warning: Failed to remount root filesystem, skipping DHCP hook installation" >&2
+		fi
+	fi
+}
+
+swap_dhcpcd_hook 70-no_dflroute_zeroconf "#17.1.5"
+swap_dhcpcd_hook 20-resolv.conf "#17.1.5"
+
 if [ "${LIVEPUSH}" = "1" ]; then
 	exec npx nodemon --watch src --watch typings --ignore tests -e js,ts,json \
 		--exec node -r ts-node/register/transpile-only src/app.ts
