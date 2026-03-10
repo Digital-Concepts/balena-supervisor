@@ -28,7 +28,8 @@ import {
 } from '../lib/errors';
 import { withLock } from '../lib/update-lock';
 import { promises as fs } from 'fs';
-import * as path from 'path';
+import { exec } from '../lib/fs-utils';
+import { readFromBoot, writeToBoot } from '../lib/host-utils';
 
 /**
  * Run an array of healthchecks, outputting whether all passed or not
@@ -451,53 +452,140 @@ export const patchHostConfig = async (conf: unknown, force: boolean) => {
 	await hostConfig.patch(parsedConf, force);
 };
 
-/**
- *  Get wifi config from request body and set it in the system-connections folder. Then Reboot device so changes take effect
- *
- * @param SSID wifi SSID
- * @param psk wifi password.
- */
-export const doSetWifi = async (SSID: string, psk: string): Promise<void> => {
-	try {
-		// Validate inputs
-		if (!SSID || typeof SSID !== 'string') {
-			throw new Error('Invalid SSID provided');
+// Paths for dhcpcd.conf manipulation via nsenter + remount, mirroring the
+// pattern established in entry.sh for DHCP hook hotswapping.
+const ROOT_DHCPCD_CONF = `${constants.rootMountPoint}/etc/dhcpcd.conf`;
+const STAGED_DHCPCD_CONF = `${constants.rootMountPoint}/tmp/dhcpcd.conf.new`;
+const NS_MOUNT = `${constants.rootMountPoint}/proc/1/ns/mnt`;
+
+// Remove or replace previous eth0 information
+const modifyDhcpcdConf = (content: string, newSection?: string): string => {
+	const lines = content.split('\n');
+	const result: string[] = [];
+	let inEth0Section = false;
+
+	for (const line of lines) {
+		const trimmed = line.trim();
+		if (/^interface\s+eth0(\s|$)/.test(trimmed)) {
+			inEth0Section = true;
+			continue;
 		}
-
-		const systemConnectionsPath = '/mnt/boot/system-connections';
-		const networkManagerPath =
-			'/mnt/state/root-overlay/etc/NetworkManager/system-connections';
-		const wifiFilePath = path.join(systemConnectionsPath, `${SSID}.conf`);
-		const nmFilePath = path.join(networkManagerPath, `${SSID}.conf`);
-
-		const wifiFileContent = [
-			'[connection]',
-			`id=${SSID}`,
-			'type=wifi',
-			'',
-			'[wifi]',
-			'hidden=true',
-			'mode=infrastructure',
-			`ssid=${SSID}`,
-			'',
-			'[wifi-security]',
-			'auth-alg=open',
-			'key-mgmt=wpa-psk',
-			`psk=${psk}`,
-			'',
-			'[ipv4]',
-			'method=auto',
-			'',
-			'[ipv6]',
-			'addr-gen-mode=stable-privacy',
-			'method=auto',
-		].join('\n');
-
-		// Write new config and set permissions
-		await fs.writeFile(nmFilePath, wifiFileContent, { mode: 0o600 });
-		await fs.writeFile(wifiFilePath, wifiFileContent, { mode: 0o600 });
-	} catch (error) {
-		console.error('Error setting wifi config:', error);
-		throw error;
+		if (inEth0Section && /^interface\s+/.test(trimmed)) {
+			inEth0Section = false;
+		}
+		if (!inEth0Section) {
+			result.push(line);
+		}
 	}
+
+	while (result.length > 0 && result[result.length - 1].trim() === '') {
+		result.pop();
+	}
+
+	if (newSection) {
+		result.push('');
+		result.push(newSection);
+	}
+
+	return result.join('\n') + '\n';
+};
+
+// Write modified dhcpcd.conf to the host filesystem using the nsenter as we
+// need those actions on the host not the container
+const writeDhcpcdConf = async (content: string): Promise<void> => {
+	await fs.writeFile(STAGED_DHCPCD_CONF, content, { mode: 0o644 });
+	try {
+		// mount it as rw then hotswap the config
+		await exec(`nsenter --mount=${NS_MOUNT} -- mount -o remount,rw /`);
+		await exec(
+			`nsenter --mount=${NS_MOUNT} -- sh -c 'cp /tmp/dhcpcd.conf.new /etc/dhcpcd.conf && rm /tmp/dhcpcd.conf.new'`,
+		);
+	} finally {
+		await exec(`nsenter --mount=${NS_MOUNT} -- mount -o remount,ro /`).catch(
+			(e: unknown) =>
+				log.warn(
+					'Failed to remount root read-only after dhcpcd.conf write:',
+					e,
+				),
+		);
+		await fs.unlink(STAGED_DHCPCD_CONF).catch(() => undefined);
+	}
+};
+
+// restart dhcpcd with thenew config
+const reloadDhcpcd = async () => {
+	await exec(
+		`nsenter --mount=${NS_MOUNT} -- sh -c 'killall -HUP dhcpcd 2>/dev/null || true'`,
+	).catch((e: unknown) => log.warn('Failed to signal dhcpcd to reload:', e));
+};
+
+// Write the information for the the .conf into the correct format. and modify the file.
+export const doSetEth0StaticIp = async (
+	ip: string,
+	routers?: string,
+	dns?: string,
+): Promise<void> => {
+	const section = [
+		'interface eth0',
+		`static ip_address=${ip}`,
+		...(routers ? [`static routers=${routers}`] : []),
+		...(dns ? [`static domain_name_servers=${dns}`] : []),
+	].join('\n');
+
+	const conf = await fs.readFile(ROOT_DHCPCD_CONF, 'utf-8');
+	const modified = modifyDhcpcdConf(conf, section);
+	await writeDhcpcdConf(modified);
+	await reloadDhcpcd();
+};
+
+// Remove the eth0 ip information from the .conf.
+// restart the dhcpcd.
+export const doClearEth0StaticIp = async (): Promise<void> => {
+	const conf = await fs.readFile(ROOT_DHCPCD_CONF, 'utf-8');
+	const modified = modifyDhcpcdConf(conf);
+	await writeDhcpcdConf(modified);
+	await reloadDhcpcd();
+};
+
+// ---------------------------------------------------------------------------
+// NTP server configuration — reads/writes ntpServers in /mnt/boot/config.json
+// ---------------------------------------------------------------------------
+
+const readConfigJson = async (): Promise<Record<string, unknown>> => {
+	const content = await readFromBoot(constants.configJsonPath, 'utf-8');
+	return JSON.parse(content) as Record<string, unknown>;
+};
+
+const writeConfigJson = async (
+	conf: Record<string, unknown>,
+): Promise<void> => {
+	await writeToBoot(constants.configJsonPath, JSON.stringify(conf));
+};
+
+/**
+ * Return the current ntpServers string from config.json, or null if not set.
+ */
+export const doGetNtpServers = async (): Promise<string | null> => {
+	const conf = await readConfigJson();
+	const val = conf.ntpServers;
+	return typeof val === 'string' ? val : null;
+};
+
+/**
+ * Write a space-separated list of NTP servers into config.json.
+ * @param ntpServers Space-separated NTP server addresses, e.g. "ntp1.server.com ntp2.server.com"
+ */
+export const doSetNtpServers = async (ntpServers: string): Promise<void> => {
+	const conf = await readConfigJson();
+	conf.ntpServers = ntpServers;
+	await writeConfigJson(conf);
+};
+
+/**
+ * Remove the ntpServers key from config.json, reverting to balenaOS defaults.
+ */
+export const doClearNtpServers = async (): Promise<void> => {
+	const conf = await readConfigJson();
+	delete conf.ntpServers;
+	await writeConfigJson(conf);
 };

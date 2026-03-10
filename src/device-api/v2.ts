@@ -592,35 +592,99 @@ router.get('/v2/reprovision', async (_req: Request, res: Response) => {
 	}
 });
 
-router.post(
-	'/v2/set-wifi',
-	(req: AuthorizedRequest, res: Response, next: NextFunction) => {
-		const SSID = checkString(req.body.SSID);
-		const psk = checkString(req.body.psk);
+// Validates an IPv4 address with CIDR prefix (e.g. "192.168.1.100/24")
+const isValidCidr = (ip: string) =>
+	/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(ip);
 
-		if (!SSID || !psk) {
-			return res.status(400).json({
-				status: 'failed',
-				message: 'Invalid SSID or PSK',
-			});
-		}
+// Validates a bare IPv4 address (e.g. "192.168.1.1")
+const isValidIp = (ip: string) =>
+	/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip);
 
-		if (psk.length < 8 || psk.length > 63) {
-			return res.status(400).json({
-				status: 'failed',
-				message: 'PSK must be between 8 and 63 characters',
-			});
-		}
-		return actions
-			.doSetWifi(SSID, psk)
-			.then(() => {
-				res.status(200).json({
-					status: 'success',
-					message: 'WiFi configuration updated',
-				});
-			})
-			.catch(next);
-	},
-);
+router.post('/v2/network/eth0/static-ip', async (req, res, next) => {
+	const ip = checkString(req.body.ip);
+	const routers = checkString(req.body.routers);
+	const dns = checkString(req.body.dns);
+
+	if (!ip || !isValidCidr(ip)) {
+		return res.status(400).json({
+			status: 'failed',
+			message:
+				'Missing or invalid ip field, expected format: x.x.x.x/prefix (e.g. 192.168.1.100/24)',
+		});
+	}
+
+	if (routers && !isValidIp(routers)) {
+		return res.status(400).json({
+			status: 'failed',
+			message: 'Invalid routers field, expected a single IPv4 address',
+		});
+	}
+
+	try {
+		await actions.doSetEth0StaticIp(ip, routers || undefined, dns || undefined);
+		return res.status(200).json({
+			status: 'success',
+			message: 'Static IP configuration applied to eth0',
+		});
+	} catch (e) {
+		next(e);
+	}
+});
+
+router.delete('/v2/network/eth0/static-ip', async (_req, res, next) => {
+	try {
+		await actions.doClearEth0StaticIp();
+		return res.status(200).json({
+			status: 'success',
+			message: 'Static IP configuration cleared for eth0, reverting to DHCP',
+		});
+	} catch (e) {
+		next(e);
+	}
+});
+
+router.get('/v2/device/ntp-servers', async (_req, res, next) => {
+	try {
+		const ntpServers = await actions.doGetNtpServers();
+		return res.status(200).json({
+			status: 'success',
+			ntpServers,
+		});
+	} catch (e) {
+		next(e);
+	}
+});
+
+router.post('/v2/device/ntp-servers', async (req, res, next) => {
+	const ntpServers = checkString(req.body.ntpServers);
+	if (!ntpServers) {
+		return res.status(400).json({
+			status: 'failed',
+			message:
+				'Missing or invalid ntpServers field (space-separated server addresses)',
+		});
+	}
+	try {
+		await actions.doSetNtpServers(ntpServers);
+		return res.status(200).json({
+			status: 'success',
+			message: 'NTP servers written to config.json.',
+		});
+	} catch (e) {
+		next(e);
+	}
+});
+
+router.delete('/v2/device/ntp-servers', async (_req, res, next) => {
+	try {
+		await actions.doClearNtpServers();
+		return res.status(200).json({
+			status: 'success',
+			message: 'NTP servers removed from config.json.',
+		});
+	} catch (e) {
+		next(e);
+	}
+});
 
 export default router;
