@@ -10,6 +10,7 @@ import { UnitNotLoadedError } from '../lib/errors';
 import { checkInt, checkTruthy } from '../lib/validation';
 import log from '../lib/supervisor-console';
 import { setRebootBreadcrumb } from '../lib/reboot';
+import { readVpnLock } from '../lib/vpn-lock';
 
 import * as configUtils from '../config/utils';
 import type { SchemaTypeKey } from '../config/schema-type';
@@ -476,15 +477,22 @@ async function getVPNSteps(
 
 	let steps: ConfigStep[] = [];
 
+	// DC vendor extension: a local lock file is the final authority.
+	// When present, ignore cloud target and enforce the locked value.
+	const lock = await readVpnLock();
+	const effectiveTarget: Dictionary<string> = lock
+		? { ...target, SUPERVISOR_VPN_CONTROL: lock.enabled ? 'true' : 'false' }
+		: target;
+
 	// Check for special case actions for the VPN
 	if (
 		!unmanaged &&
-		!_.isEmpty(target['SUPERVISOR_VPN_CONTROL']) &&
-		checkBoolChanged(current, target, 'SUPERVISOR_VPN_CONTROL')
+		!_.isEmpty(effectiveTarget['SUPERVISOR_VPN_CONTROL']) &&
+		checkBoolChanged(current, effectiveTarget, 'SUPERVISOR_VPN_CONTROL')
 	) {
 		steps.push({
 			action: 'setVPNEnabled',
-			target: target['SUPERVISOR_VPN_CONTROL'],
+			target: effectiveTarget['SUPERVISOR_VPN_CONTROL'],
 		});
 	}
 

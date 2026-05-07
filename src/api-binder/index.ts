@@ -22,6 +22,7 @@ import * as TargetState from './poll';
 import * as logger from '../logging';
 
 import * as apiHelper from '../lib/api-helper';
+import { readVpnLock } from '../lib/vpn-lock';
 import { startReporting, stateReportErrors } from './report';
 import { setTimeout } from 'timers/promises';
 
@@ -204,6 +205,45 @@ export function startCurrentStateReport() {
 	return startReporting();
 }
 
+// DC vendor extension: upsert a device_config_variable on the cloud API.
+// Used by the local /v2/dc/vpn endpoint to reflect lock changes to the
+// dashboard so operators see the truth.
+export async function setDeviceConfigVariable(
+	name: string,
+	value: string,
+): Promise<void> {
+	if (balenaApi == null) {
+		throw new InternalInconsistencyError(
+			'Attempt to set device_config_variable without an initialized API client',
+		);
+	}
+	const deviceId = await config.get('deviceId');
+	if (deviceId == null) {
+		throw new Error(
+			'Cannot set device_config_variable before device provision',
+		);
+	}
+	const existing = await balenaApi.get({
+		resource: 'device_config_variable',
+		options: {
+			$select: 'id',
+			$filter: { device: deviceId, name },
+		},
+	});
+	if (Array.isArray(existing) && existing.length > 0) {
+		await balenaApi.patch({
+			resource: 'device_config_variable',
+			id: existing[0].id,
+			body: { value },
+		});
+	} else {
+		await balenaApi.post({
+			resource: 'device_config_variable',
+			body: { device: deviceId, name, value },
+		});
+	}
+}
+
 export async function fetchDeviceTags(): Promise<DeviceTag[]> {
 	if (balenaApi == null) {
 		throw new InternalInconsistencyError(
@@ -348,8 +388,10 @@ async function reportInitialEnv(
 			varValue = 'false';
 		}
 		// We never want to disable VPN if, for instance, it failed to start so far
+		// — unless a local DC lock file asserts authority over this value.
 		if (key === 'SUPERVISOR_VPN_CONTROL') {
-			varValue = 'true';
+			const lock = await readVpnLock();
+			varValue = lock ? (lock.enabled ? 'true' : 'false') : 'true';
 		}
 
 		if (targetConfig[key] == null && varValue !== defaultConfig[key]) {

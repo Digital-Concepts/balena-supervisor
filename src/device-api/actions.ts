@@ -1,4 +1,5 @@
 import _ from 'lodash';
+import path from 'path';
 
 import { getGlobalApiKey, refreshKey } from '../lib/api-keys';
 import * as messages from './messages';
@@ -167,6 +168,82 @@ export const doPurge = async (appId: number, force: boolean = false) => {
 		throw err;
 	} finally {
 		deviceState.triggerApplyTarget();
+	}
+};
+
+const VAULT_VOLUME_NAME = 'vault_data';
+const VAULT_SNAPSHOT_PATH = path.join(
+	constants.dataMountPoint,
+	'factory-reset-vault-snapshot',
+);
+
+const snapshotVaultVolume = async (appId: number): Promise<boolean> => {
+	const sourceDir = path.join(
+		constants.dataMountPoint,
+		'docker/volumes',
+		`${appId}_${VAULT_VOLUME_NAME}`,
+		'_data',
+	);
+	try {
+		await fs.mkdir(VAULT_SNAPSHOT_PATH, { recursive: true });
+		await fs.cp(sourceDir, VAULT_SNAPSHOT_PATH, { recursive: true });
+		return true;
+	} catch (err) {
+		logger.logSystemMessage(
+			`Factory reset: vault snapshot failed: ${err}`,
+			{ appId },
+			'Factory reset warning',
+		);
+		return false;
+	}
+};
+
+const restoreVaultVolume = async (appId: number): Promise<void> => {
+	const targetDir = path.join(
+		constants.dataMountPoint,
+		'docker/volumes',
+		`${appId}_${VAULT_VOLUME_NAME}`,
+		'_data',
+	);
+	try {
+		await fs.cp(VAULT_SNAPSHOT_PATH, targetDir, { recursive: true });
+	} finally {
+		await fs.rm(VAULT_SNAPSHOT_PATH, { recursive: true, force: true });
+	}
+};
+
+/**
+ * Factory reset — purges all app data then restores the vault volume.
+ * The vault container must wait for its data files before starting.
+ * Used by:
+ * - POST /v2/applications/:appId/factory-reset
+ */
+export const doFactoryReset = async (appId: number, force: boolean = false) => {
+	await deviceState.initialized();
+
+	logger.logSystemMessage(
+		`Factory reset for app ${appId}`,
+		{ appId },
+		'Factory reset',
+	);
+
+	const snapshotted = await snapshotVaultVolume(appId);
+
+	await doPurge(appId, force);
+
+	if (snapshotted) {
+		await restoreVaultVolume(appId);
+		logger.logSystemMessage(
+			'Factory reset: vault restored',
+			{ appId },
+			'Factory reset',
+		);
+	} else {
+		logger.logSystemMessage(
+			'Factory reset: vault snapshot failed, device will require network provisioning',
+			{ appId },
+			'Factory reset warning',
+		);
 	}
 };
 

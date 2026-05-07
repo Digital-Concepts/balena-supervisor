@@ -25,6 +25,8 @@ import {
 	BadRequestError,
 } from '../lib/errors';
 import { isVPNActive } from '../network';
+import { readVpnLock, writeVpnLock } from '../lib/vpn-lock';
+import { setDeviceConfigVariable } from '../api-binder';
 import type { AuthorizedRequest } from '../lib/api-keys';
 import { fromV2TargetState } from '../lib/legacy';
 import * as actions from './actions';
@@ -92,6 +94,34 @@ router.post(
 router.post(
 	'/v2/applications/:appId/start-service',
 	handleServiceAction('start'),
+);
+
+router.post(
+	'/v2/applications/:appId/factory-reset',
+	(req: AuthorizedRequest, res: Response, next: NextFunction) => {
+		const appId = checkInt(req.params.appId);
+		const force = checkTruthy(req.body.force);
+		if (!appId) {
+			return res.status(400).json({
+				status: 'failed',
+				message: 'Missing app id',
+			});
+		}
+
+		if (!req.auth.isScoped({ apps: [appId] })) {
+			return res.status(401).json({
+				status: 'failed',
+				message: 'Unauthorized',
+			});
+		}
+
+		return actions
+			.doFactoryReset(appId, force)
+			.then(() => {
+				res.status(200).send('OK');
+			})
+			.catch(next);
+	},
 );
 
 router.post(
@@ -523,6 +553,71 @@ router.get('/v2/device/vpn', async (_req, res) => {
 		status: 'success',
 		vpn: info,
 	});
+});
+
+// DC vendor extension: locally-authoritative VPN control.
+// The lock file at /data/dc/vpn-lock.json overrides cloud target state for
+// SUPERVISOR_VPN_CONTROL. Writing the file via this endpoint also reflects
+// the desired value to the cloud so the dashboard remains truthful.
+router.get('/v2/dc/vpn', async (_req, res) => {
+	const conf = await deviceState.getCurrentConfig();
+	const lock = await readVpnLock();
+	return res.json({
+		status: 'success',
+		vpn: {
+			enabled: conf.SUPERVISOR_VPN_CONTROL === 'true',
+			connected: await isVPNActive(),
+			locked: lock !== null,
+			lockedAt: lock?.lockedAt ?? null,
+			lockedValue: lock ? lock.enabled : null,
+		},
+	});
+});
+
+router.post('/v2/dc/vpn', async (req, res) => {
+	const enabled = checkTruthy(req.body?.enabled);
+	if (typeof req.body?.enabled === 'undefined' || enabled == null) {
+		return res.status(400).json({
+			status: 'failed',
+			message: "Body must include 'enabled' as a boolean",
+		});
+	}
+
+	try {
+		// 1. Lock file is the local authority; write it first so any subsequent
+		//    reconciliation honours the new desired state even if later steps fail.
+		const lock = await writeVpnLock(enabled);
+
+		// 2. Trigger immediate reconciliation. getVPNSteps will read the lock
+		//    file and emit a setVPNEnabled step if the live service disagrees.
+		await deviceState.triggerApplyTarget({ force: true });
+
+		// 3. Reflect to cloud so the dashboard reports the truth. Best-effort:
+		//    if the cloud is unreachable the local state still wins on next sync.
+		try {
+			await setDeviceConfigVariable(
+				'RESIN_SUPERVISOR_VPN_CONTROL',
+				enabled ? 'true' : 'false',
+			);
+		} catch (e: any) {
+			log.warn(`Could not reflect VPN lock to cloud: ${e?.message ?? e}`);
+		}
+
+		return res.json({
+			status: 'success',
+			vpn: {
+				locked: true,
+				lockedAt: lock.lockedAt,
+				lockedValue: lock.enabled,
+			},
+		});
+	} catch (e: any) {
+		log.error(`Failed to set VPN lock: ${e?.message ?? e}`);
+		return res.status(500).json({
+			status: 'failed',
+			message: e?.message ?? String(e),
+		});
+	}
 });
 
 router.get('/v2/cleanup-volumes', async (req: AuthorizedRequest, res) => {
