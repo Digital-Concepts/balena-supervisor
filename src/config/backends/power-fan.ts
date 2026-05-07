@@ -52,18 +52,8 @@ export class PowerFanConfig extends ConfigBackend {
 		return name.substring(PowerFanConfig.PREFIX.length);
 	}
 
-	public async matches(deviceType: string): Promise<boolean> {
-		// We only support Jetpack 6 devices for now, which includes all Orin devices
-		// except for jetson-orin-nx-xv3 which is still on Jetpack 5 as of OS v5.1.36
-		return new Set([
-			'jetson-agx-orin-devkit',
-			'jetson-agx-orin-devkit-64gb',
-			'jetson-orin-nano-devkit-nvme',
-			'jetson-orin-nano-seeed-j3010',
-			'jetson-orin-nx-seeed-j4012',
-			'jetson-orin-nx-xavier-nx-devkit',
-			'forecr-dsb-ornx-orin-nano-8gb',
-		]).has(deviceType);
+	public matches(deviceType: string): boolean {
+		return deviceType.includes('-orin-');
 	}
 
 	public async getBootConfig(): Promise<ConfigOptions> {
@@ -102,7 +92,7 @@ export class PowerFanConfig extends ConfigBackend {
 		try {
 			rawConf = await this.configJson.get('os');
 		} catch (err: unknown) {
-			log.error(`${(err as Error).message ?? err}`);
+			log.error((err as Error).message ?? err);
 			return;
 		}
 

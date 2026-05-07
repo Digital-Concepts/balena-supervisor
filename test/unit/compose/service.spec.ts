@@ -1,4 +1,6 @@
 import * as _ from 'lodash';
+import type { SinonSpy } from 'sinon';
+import * as fs from 'node:fs';
 
 import { expect } from 'chai';
 import { createContainer } from '~/test-lib/mockerode';
@@ -7,27 +9,37 @@ import { Service } from '~/src/compose/service';
 import { Volume } from '~/src/compose/volume';
 import * as ServiceT from '~/src/compose/types/service';
 import * as constants from '~/lib/constants';
+import log from '~/src/lib/supervisor-console';
+
+const loadJson = (path: string) =>
+	JSON.parse(fs.readFileSync(require.resolve(path), 'utf-8'));
 
 const configs = {
 	simple: {
-		compose: require('~/test-data/docker-states/simple/compose.json'),
-		imageInfo: require('~/test-data/docker-states/simple/imageInfo.json'),
-		inspect: require('~/test-data/docker-states/simple/inspect.json'),
+		compose: loadJson('~/test-data/docker-states/simple/compose.json'),
+		imageInfo: loadJson('~/test-data/docker-states/simple/imageInfo.json'),
+		inspect: loadJson('~/test-data/docker-states/simple/inspect.json'),
 	},
 	entrypoint: {
-		compose: require('~/test-data/docker-states/entrypoint/compose.json'),
-		imageInfo: require('~/test-data/docker-states/entrypoint/imageInfo.json'),
-		inspect: require('~/test-data/docker-states/entrypoint/inspect.json'),
+		compose: loadJson('~/test-data/docker-states/entrypoint/compose.json'),
+		imageInfo: loadJson('~/test-data/docker-states/entrypoint/imageInfo.json'),
+		inspect: loadJson('~/test-data/docker-states/entrypoint/inspect.json'),
 	},
 	networkModeService: {
-		compose: require('~/test-data/docker-states/network-mode-service/compose.json'),
-		imageInfo: require('~/test-data/docker-states/network-mode-service/imageInfo.json'),
-		inspect: require('~/test-data/docker-states/network-mode-service/inspect.json'),
+		compose: loadJson(
+			'~/test-data/docker-states/network-mode-service/compose.json',
+		),
+		imageInfo: loadJson(
+			'~/test-data/docker-states/network-mode-service/imageInfo.json',
+		),
+		inspect: loadJson(
+			'~/test-data/docker-states/network-mode-service/inspect.json',
+		),
 	},
 	init: {
-		compose: require('~/test-data/docker-states/init/compose.json'),
-		imageInfo: require('~/test-data/docker-states/init/imageInfo.json'),
-		inspect: require('~/test-data/docker-states/init/inspect.json'),
+		compose: loadJson('~/test-data/docker-states/init/compose.json'),
+		imageInfo: loadJson('~/test-data/docker-states/init/imageInfo.json'),
+		inspect: loadJson('~/test-data/docker-states/init/inspect.json'),
 	},
 };
 
@@ -658,6 +670,55 @@ describe('compose/service: unit tests', () => {
 			expect(svc1.isEqualConfig(svc2, {})).to.be.true;
 			expect(svc2.isEqualConfig(svc1, {})).to.be.true;
 		});
+
+		it('should redact environment variables from debug logs when configs differ', async () => {
+			const svc1 = await Service.fromComposeObject(
+				{
+					appId: 1,
+					serviceId: 1,
+					serviceName: 'test',
+					environment: {
+						SECRET_KEY: 'super-secret-value',
+						API_TOKEN: 'sensitive-token',
+					},
+				},
+				{ appName: 'test' } as any,
+			);
+
+			const svc2 = await Service.fromComposeObject(
+				{
+					appId: 1,
+					serviceId: 1,
+					serviceName: 'test',
+					environment: {
+						SECRET_KEY: 'different-secret',
+						API_TOKEN: 'different-token',
+						NEW_VAR: 'new-value',
+					},
+				},
+				{ appName: 'test' } as any,
+			);
+
+			svc1.isEqualConfig(svc2, {});
+
+			const debugSpy = log.debug as SinonSpy;
+			const diffLog = debugSpy
+				.getCalls()
+				.map((call) => call.args.join(' '))
+				.find((msg) => msg.includes('Non-array fields'));
+
+			expect(diffLog).to.not.be.undefined;
+
+			// Ensure sensitive values are not in the logs
+			expect(diffLog).to.not.include('super-secret-value');
+			expect(diffLog).to.not.include('sensitive-token');
+			expect(diffLog).to.not.include('different-secret');
+			expect(diffLog).to.not.include('different-token');
+			expect(diffLog).to.not.include('new-value');
+
+			// Ensure the redaction marker is present
+			expect(diffLog).to.include('hidden');
+		});
 	});
 
 	describe('Feature labels', () => {
@@ -891,6 +952,46 @@ describe('compose/service: unit tests', () => {
 				expect(s.config)
 					.to.have.property('deviceRequests')
 					.that.deep.equals([gpuDeviceRequest]);
+			});
+		});
+
+		describe('io.balena.features.extra-firmware', () => {
+			it('should add extra-firmware volume mount when the feature is set', async () => {
+				const s = await Service.fromComposeObject(
+					{
+						appId: 123,
+						serviceId: 123,
+						serviceName: 'test',
+						labels: {
+							'io.balena.features.extra-firmware': '1',
+						},
+					},
+					{ appName: 'test' } as any,
+				);
+
+				expect(s.config.volumes).to.deep.include({
+					type: 'volume',
+					source: 'extra-firmware',
+					target: '/extra-firmware',
+				});
+			});
+
+			it('should not add extra-firmware volume mount when the feature is not set', async () => {
+				const s = await Service.fromComposeObject(
+					{
+						appId: 123,
+						serviceId: 123,
+						serviceName: 'test',
+						labels: {},
+					},
+					{ appName: 'test' } as any,
+				);
+
+				expect(s.config.volumes).to.not.deep.include({
+					type: 'volume',
+					source: 'extra-firmware',
+					target: '/extra-firmware',
+				});
 			});
 		});
 	});
@@ -1279,7 +1380,7 @@ describe('compose/service: unit tests', () => {
 			});
 		});
 
-		it('should generate a service instance from a docker container (container -> Service)', async () => {
+		it('should generate a service instance from a docker container (container -> Service)', () => {
 			const appId = 6;
 			const mockContainer = createContainer({
 				Id: 'deadbeef',
@@ -1357,30 +1458,30 @@ describe('compose/service: unit tests', () => {
 	describe('Service volume types', () => {
 		it('should correctly identify short syntax volumes', () => {
 			// Short binds
-			['/one:/one', '/two:/two:ro', '/three:/three:rw'].forEach((b) => {
+			for (const b of ['/one:/one', '/two:/two:ro', '/three:/three:rw']) {
 				expect(ServiceT.ShortMount.is(b)).to.be.true;
 				expect(ServiceT.ShortBind.is(b)).to.be.true;
 				expect(ServiceT.ShortAnonymousVolume.is(b)).to.be.false;
 				expect(ServiceT.ShortNamedVolume.is(b)).to.be.false;
-			});
+			}
 			// Short anonymous volumes
-			['volume', 'another_volume'].forEach((v) => {
+			for (const v of ['volume', 'another_volume']) {
 				expect(ServiceT.ShortMount.is(v)).to.be.false;
 				expect(ServiceT.ShortBind.is(v)).to.be.false;
 				expect(ServiceT.ShortAnonymousVolume.is(v)).to.be.true;
 				expect(ServiceT.ShortNamedVolume.is(v)).to.be.false;
-			});
+			}
 			// Short named volumes
-			[
+			for (const v of [
 				'another_one:/another/one',
 				'yet_another:/yet/another:ro',
 				'final:/final:rw',
-			].forEach((v) => {
+			]) {
 				expect(ServiceT.ShortMount.is(v)).to.be.true;
 				expect(ServiceT.ShortBind.is(v)).to.be.false;
 				expect(ServiceT.ShortAnonymousVolume.is(v)).to.be.false;
 				expect(ServiceT.ShortNamedVolume.is(v)).to.be.true;
-			});
+			}
 		});
 
 		it('should correctly identify long syntax volumes', () => {
@@ -1394,12 +1495,12 @@ describe('compose/service: unit tests', () => {
 				{ type: 'volume', target: '/four', bind: { propagation: 'slave' } },
 				{ type: 'volume', target: '/five', tmpfs: { size: 200 } },
 			];
-			longAnonymousVols.forEach((v) => {
+			for (const v of longAnonymousVols) {
 				expect(ServiceT.LongAnonymousVolume.is(v)).to.be.true;
 				expect(ServiceT.LongNamedVolume.is(v)).to.be.false;
 				expect(ServiceT.LongBind.is(v)).to.be.false;
 				expect(ServiceT.LongTmpfs.is(v)).to.be.false;
-			});
+			}
 
 			const longNamedVols = [
 				{ type: 'volume', source: 'one', target: '/one' },
@@ -1423,12 +1524,12 @@ describe('compose/service: unit tests', () => {
 					tmpfs: { size: 200 },
 				},
 			];
-			longNamedVols.forEach((v) => {
+			for (const v of longNamedVols) {
 				expect(ServiceT.LongAnonymousVolume.is(v)).to.be.false;
 				expect(ServiceT.LongNamedVolume.is(v)).to.be.true;
 				expect(ServiceT.LongBind.is(v)).to.be.false;
 				expect(ServiceT.LongTmpfs.is(v)).to.be.false;
-			});
+			}
 
 			const longBinds = [
 				{ type: 'bind', source: '/one', target: '/one' },
@@ -1452,12 +1553,12 @@ describe('compose/service: unit tests', () => {
 					tmpfs: { size: 200 },
 				},
 			];
-			longBinds.forEach((v) => {
+			for (const v of longBinds) {
 				expect(ServiceT.LongAnonymousVolume.is(v)).to.be.false;
 				expect(ServiceT.LongNamedVolume.is(v)).to.be.false;
 				expect(ServiceT.LongBind.is(v)).to.be.true;
 				expect(ServiceT.LongTmpfs.is(v)).to.be.false;
-			});
+			}
 
 			const longTmpfs = [
 				{ type: 'tmpfs', target: '/var/tmp' },
@@ -1466,12 +1567,12 @@ describe('compose/service: unit tests', () => {
 				{ type: 'tmpfs', target: '/var/tmp4', bind: { propagation: 'slave' } },
 				{ type: 'tmpfs', target: '/var/tmp4', tmpfs: { size: 200 } },
 			];
-			longTmpfs.forEach((v) => {
+			for (const v of longTmpfs) {
 				expect(ServiceT.LongAnonymousVolume.is(v)).to.be.false;
 				expect(ServiceT.LongNamedVolume.is(v)).to.be.false;
 				expect(ServiceT.LongBind.is(v)).to.be.false;
 				expect(ServiceT.LongTmpfs.is(v)).to.be.true;
-			});
+			}
 
 			// All of the following volume definitions are not allowed by docker-compose
 			const invalids = [
@@ -1484,12 +1585,12 @@ describe('compose/service: unit tests', () => {
 				// Other types besides volume, tmpfs, or bind
 				{ type: 'invalid', source: 'test', target: '/test2' },
 			];
-			invalids.forEach((v) => {
+			for (const v of invalids) {
 				expect(ServiceT.LongAnonymousVolume.is(v)).to.be.false;
 				expect(ServiceT.LongNamedVolume.is(v)).to.be.false;
 				expect(ServiceT.LongBind.is(v)).to.be.false;
 				expect(ServiceT.LongTmpfs.is(v)).to.be.false;
-			});
+			}
 		});
 	});
 });

@@ -13,7 +13,7 @@ import log from './supervisor-console';
 // containers cannot mount under balena's release validation rules.
 
 export const VPN_LOCK_PATH =
-	process.env.DC_VPN_LOCK_PATH || '/data/dc/vpn-lock.json';
+	process.env.DC_VPN_LOCK_PATH ?? '/data/dc/vpn-lock.json';
 
 export interface VpnLock {
 	enabled: boolean;

@@ -1,10 +1,10 @@
 import type Docker from 'dockerode';
 import isEqual from 'lodash/isEqual';
 import omitBy from 'lodash/omitBy';
+import { TypedError } from 'typed-error';
 
 import * as constants from '../lib/constants';
 import { docker } from '../lib/docker-utils';
-import { InternalInconsistencyError } from '../lib/errors';
 import * as LogTypes from '../lib/log-types';
 import type { LabelObject } from '../types';
 import * as logger from '../logging';
@@ -23,6 +23,8 @@ export type Volume = VolumeIface;
 
 const execAsync = promisify(exec);
 
+export class VolumeNameParsingError extends TypedError {}
+
 class VolumeImpl implements Volume {
 	private constructor(
 		public name: string,
@@ -34,9 +36,9 @@ class VolumeImpl implements Volume {
 	public static fromDockerVolume(inspect: Docker.VolumeInspectInfo): Volume {
 		// Convert the docker inspect to the config
 		const config: VolumeConfig = {
-			labels: inspect.Labels || {},
+			labels: inspect.Labels ?? {},
 			driver: inspect.Driver,
-			driverOpts: inspect.Options || {},
+			driverOpts: inspect.Options ?? {},
 		};
 
 		// Detect the name and appId from the inspect data
@@ -53,12 +55,12 @@ class VolumeImpl implements Volume {
 		config = {} as Partial<ComposeVolumeConfig>,
 	) {
 		const filledConfig: VolumeConfig = {
-			driverOpts: config.driver_opts || {},
-			driver: config.driver || 'local',
+			driverOpts: config.driver_opts ?? {},
+			driver: config.driver ?? 'local',
 			labels: {
 				// We only need to assign the labels here, as when we
 				// get it from the daemon, they should already be there
-				...ComposeUtils.normalizeLabels(config.labels || {}),
+				...ComposeUtils.normalizeLabels(config.labels ?? {}),
 				...constants.defaultVolumeLabels,
 
 				// the app uuid will always be in the target state, the
@@ -190,14 +192,14 @@ class VolumeImpl implements Volume {
 	} {
 		const match = name.match(/(\d+)_(\S+)/);
 		if (match == null) {
-			throw new InternalInconsistencyError(
+			throw new VolumeNameParsingError(
 				`Could not detect volume data from docker name: ${name}`,
 			);
 		}
 
 		const appId = parseInt(match[1], 10);
 		if (isNaN(appId)) {
-			throw new InternalInconsistencyError(
+			throw new VolumeNameParsingError(
 				`Could not detect application id from docker name: ${match[1]}`,
 			);
 		}

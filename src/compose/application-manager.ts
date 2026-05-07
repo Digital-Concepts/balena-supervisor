@@ -42,6 +42,7 @@ import type {
 } from './types';
 import { isRebootBreadcrumbSet } from '../lib/reboot';
 import { getBootTime } from '../lib/fs-utils';
+import * as extraFirmware from '../lib/extra-firmware';
 
 type ApplicationManagerEventEmitter = StrictEventEmitter<
 	EventEmitter,
@@ -60,7 +61,7 @@ const localModeManager = new LocalModeManager();
 export let fetchesInProgress = 0;
 export let timeSpentFetching = 0;
 
-export function resetTimeSpentFetching(value: number = 0) {
+export function resetTimeSpentFetching(value = 0) {
 	timeSpentFetching = value;
 }
 
@@ -130,24 +131,18 @@ export async function getRequiredSteps(
 	},
 ): Promise<CompositionStep[]> {
 	// get some required data
-	const [downloading, availableImages, { localMode, delta }] =
-		await Promise.all([
-			imageManager.getDownloadingImageNames(),
-			imageManager.getAvailable(),
-			config.getMany(['localMode', 'delta']),
-		]);
+	const downloading = imageManager.getDownloadingImageNames();
+	const [availableImages, { localMode, delta }] = await Promise.all([
+		imageManager.getAvailable(),
+		config.getMany(['localMode', 'delta']),
+	]);
 	const containerIdsByAppId = getAppContainerIds(currentApps);
 	const rebootBreadcrumbSet = await isRebootBreadcrumbSet();
 
 	// Local mode sets the image and volume retention only
 	// if not explicitely set by the caller
-	if (keepImages == null) {
-		keepImages = localMode;
-	}
-
-	if (keepVolumes == null) {
-		keepVolumes = localMode;
-	}
+	keepImages ??= localMode;
+	keepVolumes ??= localMode;
 
 	return await inferNextSteps(currentApps, targetApps, {
 		// Images are not removed while in local mode to avoid removing the user app images
@@ -218,6 +213,8 @@ export async function inferNextSteps(
 		} else {
 			steps.push({ action: 'ensureSupervisorNetwork' });
 		}
+	} else if (!(await extraFirmware.isInitialized(config.configJsonBackend))) {
+		steps.push({ action: 'ensureExtraFirmwareVolume' });
 	} else {
 		if (downloading.length === 0) {
 			// Avoid cleaning up dangling images while purging
@@ -332,7 +329,7 @@ export async function inferNextSteps(
 		// application, as we want to download all images then
 		// Otherwise we want to limit the downloading of
 		// deltas to constants.maxDeltaDownloads
-		const appImages = _.groupBy(availableImages, 'appId');
+		const appImages = Object.groupBy(availableImages, ({ appId }) => appId);
 		let downloadsToBlock =
 			downloading.length + newDownloads - constants.maxDeltaDownloads;
 
@@ -451,8 +448,8 @@ function groupComponents(
 	] as any;
 
 	const allUuids: string[] = [];
-	const allAppIds: number[] = [];
-	everyComponent.forEach(({ appId, appUuid }) => {
+	const allAppIds = new Set<number>();
+	for (const { appId, appUuid } of everyComponent) {
 		// Pre-populate the groupings
 		grouping[appId] = {
 			services: [],
@@ -463,14 +460,14 @@ function groupComponents(
 		if (appUuid != null) {
 			allUuids.push(appUuid);
 		}
-		allAppIds.push(appId);
-	});
+		allAppIds.add(appId);
+	}
 
 	// First we try to group everything by it's uuid, but if any component does
 	// not have a uuid, we fall back to the old appId style
 	if (everyComponent.length === allUuids.length) {
 		const uuidGroups: { [uuid: string]: AppGroup[0] } = {};
-		new Set(allUuids).forEach((uuid) => {
+		for (const uuid of new Set(allUuids)) {
 			const uuidServices = services.filter(
 				({ appUuid: sUuid }) => uuid === sUuid,
 			);
@@ -486,7 +483,7 @@ function groupComponents(
 				networks: uuidNetworks,
 				volumes: uuidVolumes,
 			};
-		});
+		}
 
 		for (const uuid of Object.keys(uuidGroups)) {
 			// There's a chance that the uuid and the appId is different, and this
@@ -503,21 +500,21 @@ function groupComponents(
 		// Otherwise group them by appId and let the state engine match them later.
 		// This will only happen once, as every target state going forward will
 		// contain UUIDs, we just need to handle the initial upgrade
-		const appSvcs = _.groupBy(services, 'appId');
-		const appVols = _.groupBy(volumes, 'appId');
-		const appNets = _.groupBy(networks, 'appId');
+		const appSvcs = Object.groupBy(services, ({ appId }) => appId);
+		const appVols = Object.groupBy(volumes, ({ appId }) => appId);
+		const appNets = Object.groupBy(networks, ({ appId }) => appId);
 
-		_.uniq(allAppIds).forEach((appId) => {
+		for (const appId of allAppIds) {
 			grouping[appId].services = grouping[appId].services.concat(
-				appSvcs[appId] || [],
+				appSvcs[appId] ?? [],
 			);
 			grouping[appId].networks = grouping[appId].networks.concat(
-				appNets[appId] || [],
+				appNets[appId] ?? [],
 			);
 			grouping[appId].volumes = grouping[appId].volumes.concat(
-				appVols[appId] || [],
+				appVols[appId] ?? [],
 			);
-		});
+		}
 	}
 
 	return grouping;
@@ -525,8 +522,8 @@ function groupComponents(
 
 function killServicesUsingApi(current: InstancedAppState): CompositionStep[] {
 	const steps: CompositionStep[] = [];
-	_.each(current, (app) => {
-		_.each(app.services, (service) => {
+	for (const app of Object.values(current)) {
+		for (const service of app.services) {
 			const isUsingSupervisorAPI = checkTruthy(
 				service.config.labels['io.balena.features.supervisor-api'],
 			);
@@ -541,8 +538,8 @@ function killServicesUsingApi(current: InstancedAppState): CompositionStep[] {
 				// Wait for the service to finish stopping
 				steps.push(generateStep('noop', {}));
 			}
-		});
-	});
+		}
+	}
 	return steps;
 }
 
@@ -554,18 +551,16 @@ export async function executeStep(
 	{ force = false } = {},
 ): Promise<void> {
 	if (!validActions.includes(step.action)) {
-		return Promise.reject(
-			new InternalInconsistencyError(
-				`Invalid composition step action: ${step.action}`,
-			),
+		throw new InternalInconsistencyError(
+			`Invalid composition step action: ${step.action}`,
 		);
 	}
 
-	// TODO: Find out why this needs to be cast, the typings should hold true
 	await actionExecutors[step.action]({
 		...step,
+		// @ts-expect-error - TODO: Find out why this errors, the typings should hold true
 		force,
-	} as any);
+	});
 }
 
 export async function setTarget(
@@ -637,10 +632,6 @@ export async function setTarget(
 
 export async function getTargetApps(): Promise<TargetApps> {
 	return await dbFormat.getTargetJson();
-}
-
-export async function getTargetAppsWithRejections() {
-	return await dbFormat.getTargetWithRejections();
 }
 
 /**
@@ -723,8 +714,7 @@ function saveAndRemoveImages(
 	);
 
 	const currentImages = _.flatMap(current, (app) =>
-		_.map(
-			app.services,
+		app.services.map(
 			(svc) =>
 				_.find(availableImages, {
 					dockerImageId: svc.config.image,
@@ -753,7 +743,7 @@ function saveAndRemoveImages(
 			),
 	);
 
-	const targetImageDockerIds = _.fromPairs(
+	const targetImageDockerIds = Object.fromEntries(
 		_.flatMap(target, allImageDockerIdsForTargetApp),
 	);
 
@@ -822,19 +812,19 @@ function saveAndRemoveImages(
 
 function getAppContainerIds(currentApps: InstancedAppState) {
 	const containerIds: { [appId: number]: Dictionary<string> } = {};
-	Object.keys(currentApps).forEach((appId) => {
+	for (const appId of Object.keys(currentApps)) {
 		const intAppId = parseInt(appId, 10);
 		const app = currentApps[intAppId];
-		const services = app.services || ([] as Service[]);
-		containerIds[intAppId] = services.reduce(
+		const services = app.services || [];
+		containerIds[intAppId] = services.reduce<Dictionary<string>>(
 			(ids, s) => ({
 				...ids,
 				...(s.serviceName &&
 					s.containerId && { [s.serviceName]: s.containerId }),
 			}),
-			{} as Dictionary<string>,
+			{},
 		);
-	});
+	}
 
 	return containerIds;
 }
@@ -885,13 +875,9 @@ export async function getLegacyState() {
 		if (!appId) {
 			continue;
 		}
-		if (apps[appId] == null) {
-			apps[appId] = {};
-		}
+		apps[appId] ??= {};
 		creationTimesAndReleases[appId] = {};
-		if (apps[appId].services == null) {
-			apps[appId].services = {};
-		}
+		apps[appId].services ??= {};
 		// We only send commit if all services have the same release, and it matches the target release
 		if (releaseId == null) {
 			({ releaseId } = service);
@@ -922,12 +908,8 @@ export async function getLegacyState() {
 
 	for (const image of images) {
 		const { appId } = image;
-		if (apps[appId] == null) {
-			apps[appId] = {};
-		}
-		if (apps[appId].services == null) {
-			apps[appId].services = {};
-		}
+		apps[appId] ??= {};
+		apps[appId].services ??= {};
 		if (apps[appId].services[image.imageId] == null) {
 			apps[appId].services[image.imageId] = _.pick(image, [
 				'status',
@@ -944,9 +926,10 @@ export async function getLegacyState() {
 type AppsReport = { [uuid: string]: AppState };
 
 export async function getState(): Promise<AppsReport> {
-	const [services, images] = await Promise.all([
+	const [services, images, targetApps] = await Promise.all([
 		serviceManager.getState(),
 		imageManager.getState(),
+		dbFormat.getApps(),
 	]);
 
 	type ServiceInfo = {
@@ -979,6 +962,39 @@ export async function getState(): Promise<AppsReport> {
 			}),
 		}),
 	);
+
+	for (const app of Object.values(targetApps)) {
+		for (const {
+			appId,
+			appUuid,
+			imageName,
+			commit,
+			serviceName,
+		} of app.services) {
+			// ignore the service if it's already part of the downloading list
+			if (
+				stateFromImages.some(
+					(img) =>
+						appUuid === img.appUuid &&
+						commit === img.commit &&
+						serviceName === img.serviceName,
+				)
+			) {
+				continue;
+			}
+
+			// add target images that are pending downnload
+			stateFromImages.push({
+				appId,
+				appUuid: appUuid!,
+				image: imageName!,
+				commit,
+				serviceName,
+				status: 'Downloading',
+				download_progress: 0,
+			});
+		}
+	}
 
 	// Get all services and augment service data from the image if any
 	const stateFromServices = services
@@ -1048,11 +1064,11 @@ export async function getState(): Promise<AppsReport> {
 	const commitsForApp: Dictionary<string | undefined> = {};
 	// Deduplicate appIds first
 	await Promise.all(
-		[...new Set(servicesToReport.map((svc) => svc.appId))].map(
-			async (appId) => {
+		new Set(servicesToReport.map((svc) => svc.appId))
+			.values()
+			.map(async (appId) => {
 				commitsForApp[appId] = await commitStore.getCommitForApp(appId);
-			},
-		),
+			}),
 	);
 
 	// Assemble the state of apps
@@ -1072,6 +1088,18 @@ export async function getState(): Promise<AppsReport> {
 		};
 
 		const releases = app.releases;
+
+		// if the target app is rejected, then skip the service
+		if (targetApps[appId]?.isRejected) {
+			releases[commit] = {
+				update_status: 'rejected',
+				services: {},
+			};
+
+			state[appUuid] = app;
+			continue;
+		}
+
 		releases[commit] = releases[commit] ?? {
 			update_status: 'done',
 			services: {},
@@ -1085,6 +1113,10 @@ export async function getState(): Promise<AppsReport> {
 		// - downloaded
 		// - applying changes
 		// - done
+		// NOTE: during an update there are multiple releases reported for the same app.
+		// The backend also uses the precedence above to calculate the device update status.
+		// If two apps are being reported and one is `downloading`, then the device update status
+		// will be `downloading`.
 		if (svc.status === 'Aborted') {
 			releases[commit].update_status = 'aborted';
 		} else if (
@@ -1094,15 +1126,15 @@ export async function getState(): Promise<AppsReport> {
 		) {
 			releases[commit].update_status = 'downloading';
 		} else if (
-			!['aborted', 'downloading'].includes(releases[commit].update_status!) &&
-			(svc.download_progress === 100 || svc.status === 'Downloaded')
+			!['aborted', 'downloading'].includes(releases[commit].update_status) &&
+			svc.status.toLowerCase() === 'downloaded'
 		) {
 			releases[commit].update_status = 'downloaded';
 		} else if (
 			// The `applying changes` state has lower precedence over the aborted/downloading/downloaded
 			// state
 			!['aborted', 'downloading', 'downloaded'].includes(
-				releases[commit].update_status!,
+				releases[commit].update_status,
 			) &&
 			['installing', 'installed', 'awaiting handover'].includes(
 				svc.status.toLowerCase(),
@@ -1114,5 +1146,6 @@ export async function getState(): Promise<AppsReport> {
 		// Update the state object
 		state[appUuid] = app;
 	}
+
 	return state;
 }

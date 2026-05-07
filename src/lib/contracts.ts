@@ -65,6 +65,8 @@ interface ServiceWithContract extends ServiceCtx {
 const validRequirementTypes = [
 	'sw.supervisor',
 	'sw.l4t',
+	'sw.os',
+	'sw.kernel',
 	'hw.device-type',
 	'arch.sw',
 ];
@@ -74,7 +76,11 @@ export function initializeContractRequirements(opts: {
 	supervisorVersion: string;
 	deviceType: string;
 	deviceArch: string;
+	kernelVersion?: string;
+	kernelSlug?: string;
 	l4tVersion?: string;
+	osVersion?: string;
+	osSlug?: string;
 }) {
 	deviceContract.addChildren([
 		new Contract({
@@ -101,6 +107,26 @@ export function initializeContractRequirements(opts: {
 			new Contract({
 				type: 'sw.l4t',
 				version: opts.l4tVersion,
+			}),
+		);
+	}
+
+	if (opts.osVersion && opts.osSlug) {
+		deviceContract.addChild(
+			new Contract({
+				type: 'sw.os',
+				slug: opts.osSlug,
+				version: opts.osVersion,
+			}),
+		);
+	}
+
+	if (opts.kernelVersion && opts.kernelSlug) {
+		deviceContract.addChild(
+			new Contract({
+				type: 'sw.kernel',
+				version: opts.kernelVersion,
+				slug: opts.kernelSlug,
 			}),
 		);
 	}
@@ -139,34 +165,45 @@ export function containerContractsFulfilled(
 	};
 }
 
+const AtomicRequirement = t.exact(
+	// Ignore additional properties
+	t.intersection([
+		t.type({
+			type: t.string,
+		}),
+		// Allow searching the most common contract matchers
+		t.partial({
+			slug: t.union([t.null, t.undefined, t.string]),
+			version: t.union([t.null, t.undefined, t.string]),
+			data: t.record(t.union([t.string, t.number]), t.any),
+		}),
+	]),
+);
+
+const DisjunctiveRequirement = t.type({
+	or: t.array(AtomicRequirement),
+});
+
+const ContractRequirement = t.union([
+	AtomicRequirement,
+	DisjunctiveRequirement,
+]);
+
 const ContainerContract = t.intersection([
 	t.type({
 		type: withDefault(t.string, 'sw.container'),
 	}),
 	t.partial({
 		slug: t.union([t.null, t.undefined, t.string]),
-		requires: t.union([
-			t.null,
-			t.undefined,
-			t.array(
-				// Ignore additional properties
-				t.exact(
-					t.intersection([
-						t.type({
-							type: t.string,
-						}),
-						// Allow searching the most common contract matchers
-						t.partial({
-							slug: t.union([t.null, t.undefined, t.string]),
-							version: t.union([t.null, t.undefined, t.string]),
-							data: t.record(t.union([t.string, t.number]), t.any),
-						}),
-					]),
-				),
-			),
-		]),
+		requires: t.union([t.null, t.undefined, t.array(ContractRequirement)]),
 	}),
 ]);
+
+export class InvalidContractTypeError extends TypedError {
+	constructor(public type: string) {
+		super(`${type} is not a valid contract requirement type`);
+	}
+}
 
 // Exported for tests only
 export function parseContract(contract: unknown): ContractObject {
@@ -177,9 +214,15 @@ export function parseContract(contract: unknown): ContractObject {
 	}
 
 	const res = result.right;
-	for (const req of res.requires || []) {
-		if (!isValidRequirementType(req.type)) {
-			throw new Error(`${req.type} is not a valid contract requirement type`);
+	for (const req of res.requires ?? []) {
+		if ('or' in req) {
+			for (const child of req.or) {
+				if (!isValidRequirementType(child.type)) {
+					throw new InvalidContractTypeError(child.type);
+				}
+			}
+		} else if (!isValidRequirementType(req.type)) {
+			throw new InvalidContractTypeError(req.type);
 		}
 	}
 

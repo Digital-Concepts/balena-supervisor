@@ -22,8 +22,9 @@ import type {
 import { getBalenaApi } from '../lib/api-helper';
 
 import type { TargetApp, TargetApps, TargetState } from '../types';
+import type { ImageInspectInfo } from 'dockerode';
 
-const defaultLegacyVolume = () => 'resin-data';
+export const defaultLegacyVolume = () => 'resin-data';
 
 /**
  * Creates a docker volume from the legacy data directory
@@ -31,7 +32,7 @@ const defaultLegacyVolume = () => 'resin-data';
 async function createVolumeFromLegacyData(
 	appId: number,
 	appUuid: string,
-): Promise<Volume | void> {
+): Promise<Volume | undefined> {
 	const name = defaultLegacyVolume();
 	const legacyPath = pathOnData(path.join('resin-data', appId.toString()));
 
@@ -99,9 +100,20 @@ export async function normaliseLegacyDatabase() {
 					commit: app.commit,
 					status: 'success',
 				},
+				$select: 'id',
 				$expand: {
 					contains__image: {
-						$expand: 'image',
+						$select: 'id',
+						$expand: {
+							image: {
+								$select: [
+									'id',
+									'is_a_build_of__service',
+									'is_stored_at__image_location',
+									'content_hash',
+								],
+							},
+						},
 					},
 					belongs_to__application: {
 						$select: ['uuid'],
@@ -115,6 +127,7 @@ export async function normaliseLegacyDatabase() {
 				`No compatible releases found in API, removing ${app.appId} from target state`,
 			);
 			await db.models('app').where({ appId: app.appId }).del();
+			continue;
 		}
 
 		// We need to get the app.uuid, release.id, serviceId, image.id and updated imageUrl
@@ -130,16 +143,14 @@ export async function normaliseLegacyDatabase() {
 			`Found a release with releaseId ${release.id}, imageId ${image.id}, serviceId ${serviceId}\nImage location is ${imageUrl}`,
 		);
 
-		const imageFromDocker = await docker
-			.getImage(service.image)
-			.inspect()
-			.catch((e: unknown) => {
-				if (isNotFoundError(e)) {
-					return;
-				}
-
+		let imageFromDocker: ImageInspectInfo | undefined;
+		try {
+			imageFromDocker = await docker.getImage(service.image).inspect();
+		} catch (e: unknown) {
+			if (!isNotFoundError(e)) {
 				throw e;
-			});
+			}
+		}
 		const imagesFromDatabase = await db
 			.models('image')
 			.where({ name: service.image })
@@ -270,7 +281,7 @@ const getUUIDFromAPI = async (appId: number) => {
 		},
 	});
 
-	if (!appDetails || !appDetails.uuid) {
+	if (!appDetails?.uuid) {
 		throw new StatusError(404, `No app with id ${appId} found on the API.`);
 	}
 

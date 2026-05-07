@@ -35,16 +35,14 @@ async function migrateAppsJson(appsPath: string) {
 		// be used again if the database gets deleted for any reason.
 		// If the target file already exists or something fails, just debug
 		// the failure.
-		await fsUtils
-			.safeRename(appsPath, targetPath)
-			.then(() => fsUtils.writeFileAtomic(appsPath, '{}'))
-			.then(() => log.debug(`Migrated existing apps.json`))
-			.catch((e) =>
-				log.debug(
-					`Continuing without migrating apps.json because of`,
-					e.message,
-				),
-			);
+		try {
+			await fsUtils.safeRename(appsPath, targetPath);
+			await fsUtils.writeFileAtomic(appsPath, '{}');
+
+			log.debug(`Migrated existing apps.json`);
+		} catch (e: any) {
+			log.debug(`Continuing without migrating apps.json because of`, e.message);
+		}
 	}
 }
 
@@ -64,7 +62,7 @@ export async function loadTargetFromFile(appsPath: string): Promise<boolean> {
 
 		if (Array.isArray(stateFromFile)) {
 			log.debug('Detected a legacy apps.json, converting...');
-			stateFromFile = fromLegacyAppsJson(stateFromFile as any[]);
+			stateFromFile = fromLegacyAppsJson(stateFromFile);
 		}
 
 		// if apps.json apps are keyed by numeric ids, then convert to v3 target state

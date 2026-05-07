@@ -95,7 +95,7 @@ export function normaliseImageName(image: string) {
 	const repository = [registry, imageName].filter((s) => !!s).join('/');
 
 	if (!digest) {
-		return [repository, tagName || 'latest'].join(':');
+		return [repository, tagName ?? 'latest'].join(':');
 	}
 
 	// Intentionally discard the tag when a digest exists
@@ -117,7 +117,8 @@ export function getRepoAndTag(image: string): { repo: string; tag?: string } {
 // Same as getRepoAndTag but joined with ':' for searching
 export function getImageWithTag(image: string) {
 	const { repo, tag } = getRepoAndTag(image);
-	return [repo, tag || 'latest'].join(':');
+
+	return [repo, tag ?? 'latest'].join(':');
 }
 
 export async function fetchDeltaWithProgress(
@@ -130,8 +131,9 @@ export async function fetchDeltaWithProgress(
 	const deltaSourceId = deltaOpts.deltaSourceId ?? deltaOpts.deltaSource;
 	const timeout = deltaOpts.deltaApplyTimeout;
 
-	const logFn = (str: string) =>
+	const logFn = (str: string) => {
 		log.debug(`delta([${serviceName}] ${deltaOpts.deltaSource}): ${str}`);
+	};
 
 	if (![2, 3].includes(deltaOpts.deltaVersion)) {
 		logFn(
@@ -189,13 +191,11 @@ export async function fetchDeltaWithProgress(
 
 	const url = `${deltaOpts.deltaEndpoint}/api/v${deltaOpts.deltaVersion}/delta?src=${deltaOpts.deltaSource}&dest=${imgDest}`;
 
-	const [res, data] = await (
-		await request.getRequestInstance()
-	).getAsync(url, opts);
+	const [res, data] = await (await request.getRequestInstance()).get(url, opts);
 	if (res.statusCode === 502 || res.statusCode === 504) {
 		throw new DeltaStillProcessingError();
 	}
-	let id: string;
+	let id: string | undefined;
 	try {
 		switch (deltaOpts.deltaVersion) {
 			case 2:
@@ -274,11 +274,13 @@ export async function fetchDeltaWithProgress(
 							);
 							break;
 						} catch (e) {
-							if (isStatusError(e)) {
+							if (isStatusError(e) || abortSignal.aborted) {
 								// A status error during delta pull indicates network issues,
 								// so we should throw an error to the handler that indicates that
 								// the delta pull should be retried until network issues are resolved,
 								// rather than falling back to a regular pull.
+								//
+								// Also don't retry if the operation was intentionally aborted
 								throw e;
 							}
 							lastError = e as Error;
@@ -318,7 +320,12 @@ export async function fetchDeltaWithProgress(
 	}
 
 	logFn(`Delta applied successfully`);
-	return id!;
+	// id should always be assigned in all cases unless an error is thrown,
+	// but TypeScript complains unless we explicitly confirm id is assigned
+	if (!id) {
+		throw new Error('Failed to get image ID after delta apply');
+	}
+	return id;
 }
 
 export async function fetchImageWithProgress(
@@ -351,7 +358,7 @@ export async function getImageEnv(id: string): Promise<EnvVarObject> {
 	const inspect = await docker.getImage(id).inspect();
 
 	try {
-		return envArrayToObject(_.get(inspect, ['Config', 'Env'], []));
+		return envArrayToObject(inspect?.Config?.Env);
 	} catch (e) {
 		log.error('Error getting env from image', e);
 		return {};
@@ -364,7 +371,7 @@ export async function getNetworkGateway(networkName: string): Promise<string> {
 	}
 
 	const network = await docker.getNetwork(networkName).inspect();
-	const config = _.get(network, ['IPAM', 'Config', '0']);
+	const config = network?.IPAM?.Config?.[0];
 	if (config != null) {
 		if (config.Gateway != null) {
 			return config.Gateway;
@@ -402,6 +409,7 @@ async function applyRsyncDelta(
 							`Got ${res.statusCode} when requesting delta from storage.`,
 						),
 					);
+					// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 				} else if (parseInt(res.headers['content-length'] || '0', 10) === 0) {
 					reject(new Error('Invalid delta URL'));
 				} else {
@@ -411,7 +419,9 @@ async function applyRsyncDelta(
 					});
 					res
 						.pipe(deltaStream)
-						.on('id', (id) => resolve(`sha256:${id}`))
+						.on('id', (id) => {
+							resolve(`sha256:${id}`);
+						})
 						.on('error', (err) => {
 							logFn(`Delta stream emitted error: ${err}`);
 							req.abort();
@@ -459,7 +469,7 @@ const getAuthToken = (() => {
 	const memoizedGetToken = memoizee(
 		async (tokenUrl: string, tokenOpts) => {
 			const tokenResponseBody = (
-				await (await request.getRequestInstance()).getAsync(tokenUrl, tokenOpts)
+				await (await request.getRequestInstance()).get(tokenUrl, tokenOpts)
 			)[1];
 			const token = tokenResponseBody?.token;
 

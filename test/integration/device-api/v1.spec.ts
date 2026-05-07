@@ -68,7 +68,9 @@ describe('device-api/v1', () => {
 	describe('POST /v1/blink', () => {
 		// Actions are tested elsewhere so we can stub the dependency here
 		before(() => stub(actions, 'identify'));
-		after(() => (actions.identify as SinonStub).restore());
+		after(() => {
+			(actions.identify as SinonStub).restore();
+		});
 
 		it('responds with 200', async () => {
 			await request(api)
@@ -81,20 +83,20 @@ describe('device-api/v1', () => {
 	describe('POST /v1/regenerate-api-key', () => {
 		// Actions are tested elsewhere so we can stub the dependency here
 		beforeEach(() => stub(actions, 'regenerateKey'));
-		afterEach(() => (actions.regenerateKey as SinonStub).restore());
+		afterEach(() => {
+			(actions.regenerateKey as SinonStub).restore();
+		});
 
 		it('responds with 200 and valid new API key', async () => {
 			const oldKey = await apiKeys.getGlobalApiKey();
 			const newKey = 'my_new_key';
 			(actions.regenerateKey as SinonStub).resolves(newKey);
 
-			await request(api)
+			const response = await request(api)
 				.post('/v1/regenerate-api-key')
 				.set('Authorization', `Bearer ${oldKey}`)
-				.expect(200)
-				.then((response) => {
-					expect(response.text).to.match(new RegExp(newKey));
-				});
+				.expect(200);
+			expect(response.text).to.match(new RegExp(newKey));
 		});
 
 		it('responds with 503 if regenerate was unsuccessful', async () => {
@@ -506,7 +508,9 @@ describe('device-api/v1', () => {
 		beforeEach(() => {
 			executeDeviceActionStub = stub(actions, 'executeDeviceAction').resolves();
 		});
-		afterEach(async () => executeDeviceActionStub.restore());
+		afterEach(() => {
+			executeDeviceActionStub.restore();
+		});
 
 		it('validates data from request body', async () => {
 			// Parses force: false
@@ -576,7 +580,9 @@ describe('device-api/v1', () => {
 		beforeEach(() => {
 			executeDeviceActionStub = stub(actions, 'executeDeviceAction').resolves();
 		});
-		afterEach(async () => executeDeviceActionStub.restore());
+		afterEach(() => {
+			executeDeviceActionStub.restore();
+		});
 
 		it('validates data from request body', async () => {
 			// Parses force: false
@@ -646,7 +652,9 @@ describe('device-api/v1', () => {
 		beforeEach(() => {
 			updateTargetStub = stub(actions, 'updateTarget');
 		});
-		afterEach(async () => updateTargetStub.restore());
+		afterEach(() => {
+			updateTargetStub.restore();
+		});
 
 		it('validates data from request body', async () => {
 			// Parses force: false
@@ -762,7 +770,9 @@ describe('device-api/v1', () => {
 		beforeEach(() => {
 			getLegacyDeviceStateStub = stub(actions, 'getLegacyDeviceState');
 		});
-		afterEach(() => getLegacyDeviceStateStub.restore());
+		afterEach(() => {
+			getLegacyDeviceStateStub.restore();
+		});
 
 		it('responds with 200 and legacy device state', async () => {
 			getLegacyDeviceStateStub.resolves({ test_state: 'Success' });
@@ -810,19 +820,19 @@ describe('device-api/v1', () => {
 
 	describe('PATCH /v1/device/host-config', () => {
 		before(() => stub(actions, 'patchHostConfig'));
-		after(() => (actions.patchHostConfig as SinonStub).restore());
+		after(() => {
+			(actions.patchHostConfig as SinonStub).restore();
+		});
 
 		it('warns on console when sent a malformed patch body', async () => {
 			await request(api)
 				.patch('/v1/device/host-config')
 				.send({})
 				.set('Authorization', `Bearer ${await apiKeys.getGlobalApiKey()}`)
-				.expect(200)
-				.then(() => {
-					expect(log.warn as SinonStub).to.have.been.calledWith(
-						"Key 'network' must exist in PATCH body",
-					);
-				});
+				.expect(200);
+			expect(log.warn as SinonStub).to.have.been.calledWith(
+				"Key 'network' must exist in PATCH body",
+			);
 		});
 
 		it('responds with 200 if patch successful', async () => {

@@ -71,13 +71,13 @@ describe('compose/app', () => {
 			// expectation
 			expect(
 				createVolumeSteps.filter(
-					(step: any) => step.target && step.target.name === 'test-volume',
+					(step: any) => step.target?.name === 'test-volume',
 				),
 			).to.have.lengthOf(1);
 
 			expect(
 				createVolumeSteps.filter(
-					(step: any) => step.target && step.target.name === 'test-volume-2',
+					(step: any) => step.target?.name === 'test-volume-2',
 				),
 			).to.have.lengthOf(1);
 		});
@@ -225,6 +225,27 @@ describe('compose/app', () => {
 			expect(removeVolumeStep).to.have.property('current').that.deep.includes({
 				name: 'test-volume',
 			});
+		});
+
+		it('should emit noop instead of kill for services already stopping during app removal', async () => {
+			const svc1 = await createService({ serviceName: 'one' });
+			svc1.status = 'Stopping';
+			const svc2 = await createService({ serviceName: 'two' });
+
+			const current = createApp({ services: [svc1, svc2] });
+			const steps = current.stepsToRemoveApp({
+				...defaultContext,
+				lock: mockLock,
+			});
+
+			// svc2 is not stopping, so it should get a kill step
+			const [killStep] = expectSteps('kill', steps, 1);
+			expect(killStep)
+				.to.have.property('current')
+				.that.deep.includes({ serviceName: 'two' });
+
+			// svc1 is already stopping, so it should get a noop instead
+			expectSteps('noop', steps, 1);
 		});
 
 		it('should not output a kill step for a service which is already stopping when changing a volume', async () => {
@@ -1217,6 +1238,34 @@ describe('compose/app', () => {
 			expectNoStep('fetch', steps);
 		});
 
+		it('should not take lock when release has changed and images need downloading', async () => {
+			const current = createApp({
+				services: [
+					await createService({
+						serviceName: 'main',
+						appId: 1,
+						commit: 'old-release',
+					}),
+				],
+				networks: [DEFAULT_NETWORK],
+			});
+			const target = createApp({
+				services: [
+					await createService({
+						serviceName: 'main',
+						appId: 1,
+						commit: 'new-release',
+					}),
+				],
+				networks: [DEFAULT_NETWORK],
+				isTarget: true,
+			});
+
+			const steps = current.nextStepsForAppUpdate(defaultContext, target);
+			expectSteps('noop', steps);
+			expectNoStep('takeLock', steps);
+		});
+
 		it('should emit a takeLock followed by an updateMetadata step when a service has not changed but the release has', async () => {
 			const current = createApp({
 				services: [
@@ -1240,8 +1289,20 @@ describe('compose/app', () => {
 				isTarget: true,
 			});
 
-			// Take lock before updating metadata
-			const steps = current.nextStepsForAppUpdate(defaultContext, target);
+			// Create available images for the target service
+			const availableImages = [
+				createImage({
+					appId: 1,
+					serviceName: 'main',
+					commit: 'new-release',
+				}),
+			];
+
+			// Take lock before updating metadata (now that images are available)
+			const steps = current.nextStepsForAppUpdate(
+				{ ...defaultContext, availableImages },
+				target,
+			);
 			const [takeLockStep] = expectSteps('takeLock', steps);
 			expect(takeLockStep)
 				.to.have.property('services')
@@ -1251,6 +1312,7 @@ describe('compose/app', () => {
 			const steps2 = current.nextStepsForAppUpdate(
 				{
 					...defaultContext,
+					availableImages,
 					lock: mockLock,
 				},
 				target,
@@ -1494,6 +1556,7 @@ describe('compose/app', () => {
 						},
 						{
 							state: {
+								status: 'Installed',
 								containerId: 'dep-id',
 							},
 						},
@@ -1512,6 +1575,7 @@ describe('compose/app', () => {
 					}),
 					await createService({
 						appId: 1,
+						running: false,
 						serviceName: 'dep',
 					}),
 				],
@@ -1545,10 +1609,8 @@ describe('compose/app', () => {
 						{ appId: 1, serviceName: 'dep' },
 						{
 							state: {
+								status: 'exited',
 								containerId: 'dep-id',
-								createdAt: new Date(Date.now() - 5 * 1000),
-								// Container was started 5 after creation
-								startedAt: new Date(),
 							},
 						},
 					),
@@ -2415,7 +2477,7 @@ describe('compose/app', () => {
 			expect(releaseLockStep).to.have.property('appId').that.equals(1);
 		});
 
-		it('should infer a releaseLock step when removing an app', async () => {
+		it('should infer a releaseLock step when removing an app', () => {
 			const current = createApp({
 				services: [],
 				networks: [],

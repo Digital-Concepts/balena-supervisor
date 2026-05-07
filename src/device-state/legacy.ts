@@ -1,6 +1,6 @@
 import _ from 'lodash';
 import type { TargetAppsV2 } from '../lib/legacy';
-import { fromV2TargetApps } from '../lib/legacy';
+import { defaultLegacyVolume, fromV2TargetApps } from '../lib/legacy';
 import type { AppsJsonFormat, TargetApp, TargetRelease } from '../types';
 
 /**
@@ -15,7 +15,7 @@ function singleToMulticontainerApp(
 ): TargetApp & { uuid: string } {
 	const environment: Dictionary<string> = {};
 	for (const key in app.env) {
-		if (!/^RESIN_/.test(key)) {
+		if (!key.startsWith('RESIN_')) {
 			environment[key] = app.env[key];
 		}
 	}
@@ -28,7 +28,7 @@ function singleToMulticontainerApp(
 		volumes: {},
 		services: {},
 	};
-	const conf = app.config != null ? app.config : {};
+	const conf = app.config ?? {};
 	const newApp: TargetApp & { uuid: string } = {
 		id: appId,
 		uuid: 'user-app',
@@ -38,20 +38,12 @@ function singleToMulticontainerApp(
 			[app.commit]: release,
 		},
 	};
-	const defaultVolume = exports.defaultLegacyVolume();
+	const defaultVolume = defaultLegacyVolume();
 	release.volumes[defaultVolume] = {};
 	const updateStrategy =
-		conf['RESIN_SUPERVISOR_UPDATE_STRATEGY'] != null
-			? conf['RESIN_SUPERVISOR_UPDATE_STRATEGY']
-			: 'download-then-kill';
-	const handoverTimeout =
-		conf['RESIN_SUPERVISOR_HANDOVER_TIMEOUT'] != null
-			? conf['RESIN_SUPERVISOR_HANDOVER_TIMEOUT']
-			: '';
-	const restartPolicy =
-		conf['RESIN_APP_RESTART_POLICY'] != null
-			? conf['RESIN_APP_RESTART_POLICY']
-			: 'always';
+		conf['RESIN_SUPERVISOR_UPDATE_STRATEGY'] ?? 'download-then-kill';
+	const handoverTimeout = conf['RESIN_SUPERVISOR_HANDOVER_TIMEOUT'] ?? '';
+	const restartPolicy = conf['RESIN_APP_RESTART_POLICY'] ?? 'always';
 	release.services = {
 		main: {
 			id: 1,
@@ -84,17 +76,13 @@ function singleToMulticontainerApp(
  * Converts an apps.json from single container to multi-app (v3) format.
  */
 export function fromLegacyAppsJson(appsArray: any[]): AppsJsonFormat {
-	const deviceConfig = _.reduce(
-		appsArray,
-		(conf, app) => {
-			return _.merge({}, conf, app.config);
-		},
-		{},
-	);
+	const deviceConfig = appsArray.reduce((conf, app) => {
+		return _.merge({}, conf, app.config);
+	}, {});
 
 	const apps = _.keyBy(
-		_.map(appsArray, singleToMulticontainerApp),
-		'uuid',
+		appsArray.map(singleToMulticontainerApp),
+		(a) => a.uuid,
 	) as Dictionary<TargetApp>;
 	return { apps, config: deviceConfig } as AppsJsonFormat;
 }

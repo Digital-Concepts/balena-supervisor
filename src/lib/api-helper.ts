@@ -1,6 +1,6 @@
-import { PinejsClientRequest } from 'pinejs-client-request';
+import PinejsClientFetch from 'pinejs-client-fetch';
 
-import Bluebird from 'bluebird';
+import pTimeout from 'p-timeout';
 import * as config from '../config';
 import * as eventTracker from '../event-tracker';
 
@@ -16,14 +16,9 @@ import {
 import log from './supervisor-console';
 import memoizee from 'memoizee';
 import url from 'url';
+import type { BalenaModel } from 'balena-sdk';
 
 export type KeyExchangeOpts = config.ConfigType<'provisioningOptions'>;
-
-export interface Device {
-	id: number;
-
-	[key: string]: unknown;
-}
 
 export const getBalenaApi = memoizee(
 	async () => {
@@ -34,13 +29,12 @@ export const getBalenaApi = memoizee(
 			'currentApiKey',
 		]);
 
-		const baseUrl = url.resolve(apiEndpoint, '/v6/');
+		const baseUrl = url.resolve(apiEndpoint, '/v7/');
 		const passthrough = structuredClone(await request.getRequestOptions());
-		passthrough.headers =
-			passthrough.headers != null ? passthrough.headers : {};
+		passthrough.headers = passthrough.headers ?? {};
 		passthrough.headers.Authorization = `Bearer ${currentApiKey}`;
 		log.info(`API Binder bound to: ${baseUrl}`);
-		return new PinejsClientRequest({
+		return new PinejsClientFetch<BalenaModel>({
 			apiPrefix: baseUrl,
 			passthrough,
 		});
@@ -49,7 +43,7 @@ export const getBalenaApi = memoizee(
 );
 
 export const fetchDevice = async (
-	balenaApi: PinejsClientRequest,
+	balenaApi: PinejsClientFetch<BalenaModel>,
 	uuid: string,
 	apiKey: string,
 	timeout: number,
@@ -60,24 +54,26 @@ export const fetchDevice = async (
 		);
 	}
 
-	const reqOpts = {
-		resource: 'device',
-		options: {
-			$filter: {
-				uuid,
-			},
-		},
-		passthrough: {
-			headers: {
-				Authorization: `Bearer ${apiKey}`,
-			},
-		},
-	};
-
 	try {
-		const [device] = (await Bluebird.resolve(balenaApi.get(reqOpts)).timeout(
-			timeout,
-		)) as Device[];
+		const [device] = await pTimeout(
+			balenaApi.get({
+				resource: 'device',
+				options: {
+					$select: 'id',
+					$filter: {
+						uuid,
+					},
+				},
+				passthrough: {
+					headers: {
+						Authorization: `Bearer ${apiKey}`,
+					},
+				},
+			}),
+			{
+				milliseconds: timeout,
+			},
+		);
 
 		if (device == null) {
 			throw new DeviceNotFoundError();
@@ -90,9 +86,9 @@ export const fetchDevice = async (
 };
 
 export const exchangeKeyAndGetDeviceOrRegenerate = async (
-	balenaApi: PinejsClientRequest,
+	balenaApi: PinejsClientFetch<BalenaModel>,
 	opts: KeyExchangeOpts,
-): Promise<Device> => {
+) => {
 	try {
 		const device = await exchangeKeyAndGetDevice(balenaApi, opts);
 		log.debug('Key exchange succeeded');
@@ -107,9 +103,9 @@ export const exchangeKeyAndGetDeviceOrRegenerate = async (
 };
 
 export const exchangeKeyAndGetDevice = async (
-	balenaApi: PinejsClientRequest,
+	balenaApi: PinejsClientFetch<BalenaModel>,
 	opts: Partial<KeyExchangeOpts>,
-): Promise<Device> => {
+) => {
 	const uuid = opts.uuid;
 	const apiRequestTimeout = opts.apiRequestTimeout;
 	if (!(uuid && apiRequestTimeout)) {
@@ -145,7 +141,7 @@ export const exchangeKeyAndGetDevice = async (
 		);
 	}
 
-	let device: Device;
+	let device: Awaited<ReturnType<typeof fetchDevice>>;
 	try {
 		device = await fetchDevice(
 			balenaApi,
@@ -158,19 +154,21 @@ export const exchangeKeyAndGetDevice = async (
 	}
 
 	// We found the device so we can try to register a working device key for it
-	const [res] = await (
-		await request.getRequestInstance()
-	)
-		.postAsync(`${opts.apiEndpoint}/api-key/device/${device.id}/device-key`, {
-			json: true,
-			body: {
-				apiKey: opts.deviceApiKey,
+	const [res] = await pTimeout(
+		(await request.getRequestInstance()).post(
+			`${opts.apiEndpoint}/api-key/device/${device.id}/device-key`,
+			{
+				json: true,
+				body: {
+					apiKey: opts.deviceApiKey,
+				},
+				headers: {
+					Authorization: `Bearer ${opts.provisioningApiKey}`,
+				},
 			},
-			headers: {
-				Authorization: `Bearer ${opts.provisioningApiKey}`,
-			},
-		})
-		.timeout(apiRequestTimeout);
+		),
+		{ milliseconds: apiRequestTimeout },
+	);
 
 	if (res.statusCode !== 200) {
 		throw new ExchangeKeyError(
@@ -182,11 +180,12 @@ export const exchangeKeyAndGetDevice = async (
 };
 
 export const provision = async (
-	balenaApi: PinejsClientRequest,
+	balenaApi: PinejsClientFetch<BalenaModel>,
 	opts: KeyExchangeOpts,
 ) => {
 	await config.initialized();
-	let device: Device | null = null;
+
+	let device: Awaited<ReturnType<typeof exchangeKeyAndGetDevice>> | undefined;
 
 	if (
 		opts.registered_at == null ||
@@ -211,7 +210,7 @@ export const provision = async (
 			}
 			log.info('New device detected. Provisioning...');
 			try {
-				device = await Bluebird.resolve(
+				device = await pTimeout(
 					deviceRegister.register({
 						applicationId: opts.applicationId,
 						uuid: opts.uuid,
@@ -224,7 +223,10 @@ export const provision = async (
 						osVariant: opts.osVariant,
 						macAddress: opts.macAddress,
 					}),
-				).timeout(opts.apiRequestTimeout);
+					{
+						milliseconds: opts.apiRequestTimeout,
+					},
+				);
 			} catch (err) {
 				if (
 					err instanceof deviceRegister.ApiError &&
@@ -265,12 +267,12 @@ export const provision = async (
 	return device;
 };
 export const reprovision = async (
-	balenaApi: PinejsClientRequest,
+	balenaApi: PinejsClientFetch<BalenaModel>,
 	opts: KeyExchangeOpts,
 ) => {
 	log.debug('Reprovisioning device');
 	await config.initialized();
-	let device: Device | null = null;
+	let device: Awaited<ReturnType<typeof exchangeKeyAndGetDevice>> | undefined;
 	if (!opts.provisioningApiKey) {
 		const oldApiKey = await config.get('oldApiKey');
 		if (oldApiKey) {
@@ -298,7 +300,7 @@ export const reprovision = async (
 			}
 			log.info('New device detected. Provisioning...');
 			try {
-				device = await Bluebird.resolve(
+				device = await pTimeout(
 					deviceRegister.register({
 						applicationId: opts.applicationId,
 						uuid: opts.uuid,
@@ -311,7 +313,10 @@ export const reprovision = async (
 						osVariant: opts.osVariant,
 						macAddress: opts.macAddress,
 					}),
-				).timeout(opts.apiRequestTimeout);
+					{
+						milliseconds: opts.apiRequestTimeout,
+					},
+				);
 			} catch (err) {
 				if (
 					err instanceof deviceRegister.ApiError &&
@@ -347,6 +352,4 @@ export const reprovision = async (
 		await config.set(configToUpdate);
 		eventTracker.track('Device bootstrap success');
 	}
-
-	return device;
 };

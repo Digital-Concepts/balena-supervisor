@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await */
 import * as _ from 'lodash';
 import rewire from 'rewire';
 
@@ -14,7 +15,7 @@ import SupervisorAPI from '~/src/device-api';
 import type { Service } from '~/src/compose/service';
 import type { Image } from '~/src/compose/images';
 
-const apiBinder = rewire('~/src/api-binder');
+const apiBinder = rewire<typeof import('~/src/api-binder')>('~/src/api-binder');
 
 const DB_PATH = './test/data/supervisor-api.sqlite';
 
@@ -150,7 +151,7 @@ async function cleanUp(): Promise<void> {
 	// Clean up test data
 	await unlinkAll(DB_PATH);
 	// Restore created SinonStubs
-	return restoreStubs();
+	restoreStubs();
 }
 
 async function createAPIOpts(): Promise<void> {

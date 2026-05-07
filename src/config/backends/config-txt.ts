@@ -73,7 +73,7 @@ export class ConfigTxt extends ConfigBackend {
 	private static PREFIX = `${constants.hostConfigVarPrefix}CONFIG_`;
 	private static PATH = hostUtils.pathOnBoot('config.txt');
 	private static REGEX = new RegExp(
-		'(?:' + _.escapeRegExp(ConfigTxt.PREFIX) + ')(.+)',
+		'(?:' + RegExp.escape(ConfigTxt.PREFIX) + ')(.+)',
 	);
 	// These keys are not config.txt keys and are managed by the power-fan backend.
 	private static UNSUPPORTED_KEYS = ['power_mode', 'fan_profile'];
@@ -92,7 +92,7 @@ export class ConfigTxt extends ConfigBackend {
 		'avoid_safe_mode',
 	].concat(ConfigTxt.UNSUPPORTED_KEYS);
 
-	public async matches(deviceType: string): Promise<boolean> {
+	public matches(deviceType: string): boolean {
 		return (
 			[
 				'fincm3',
@@ -145,16 +145,16 @@ export class ConfigTxt extends ConfigBackend {
 						const [, currParams] = overlayQueue[overlayQueue.length - 1];
 						// The specification allows multiple params in a line
 						const params = value.split(',');
-						params.forEach((param) => {
+						for (const param of params) {
 							if (isBaseParam(param)) {
 								// We make sure to put the base param in the right overlays
 								// since RPI doesn't seem to be too strict about the ordering
 								// when it comes to these base params
-								baseParams.push(value);
+								baseParams.push(param);
 							} else {
-								currParams.push(value);
+								currParams.push(param);
 							}
-						});
+						}
 					} else if (key === 'dtoverlay') {
 						// Assume that the first element is the overlay name
 						// we don't validate that the value is well formed
@@ -165,10 +165,8 @@ export class ConfigTxt extends ConfigBackend {
 						overlayQueue.push([overlay, params]);
 					} else {
 						// Otherwise push the new value to the array
-						if (conf[key] == null) {
-							conf[key] = [];
-						}
-						conf[key]!.push(value);
+						conf[key] ??= [];
+						conf[key].push(value);
 					}
 				}
 				continue;
@@ -188,11 +186,11 @@ export class ConfigTxt extends ConfigBackend {
 		for (const [overlay, params] of overlayQueue) {
 			// Convert the base overlay to global dtparams
 			if (overlay === BASE_OVERLAY && params.length > 0) {
-				conf.dtparam = conf.dtparam != null ? conf.dtparam : [];
+				conf.dtparam ??= [];
 				conf.dtparam.push(...params);
 			} else if (overlay !== BASE_OVERLAY) {
 				// Convert dtoverlays to array format
-				conf.dtoverlay = conf.dtoverlay != null ? conf.dtoverlay : [];
+				conf.dtoverlay ??= [];
 				conf.dtoverlay.push([overlay, ...params].join(','));
 			}
 		}
@@ -252,10 +250,12 @@ export class ConfigTxt extends ConfigBackend {
 
 	public processConfigVarValue(key: string, value: string): string | string[] {
 		if (isArrayConfig(key)) {
-			if (!value.startsWith('"')) {
-				return [value];
+			// Trim surrounding whitespace from the config var
+			const trimmed = value.trim();
+			if (!trimmed.startsWith('"')) {
+				return [trimmed];
 			} else {
-				return JSON.parse(`[${value}]`);
+				return JSON.parse(`[${trimmed}]`);
 			}
 		}
 		return value;
@@ -282,7 +282,7 @@ export class ConfigTxt extends ConfigBackend {
 		} else if (typeof conf.dtoverlay === 'string') {
 			conf.dtoverlay = [conf.dtoverlay];
 		}
-		if (!_.includes(conf.dtoverlay, field)) {
+		if (!conf.dtoverlay.includes(field)) {
 			conf.dtoverlay.push(field);
 		}
 		conf.dtoverlay = conf.dtoverlay.filter((s) => !_.isEmpty(s));

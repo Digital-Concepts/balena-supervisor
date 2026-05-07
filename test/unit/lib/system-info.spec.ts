@@ -149,7 +149,7 @@ describe('System information', () => {
 		});
 	});
 
-	describe('getMemoryInformation', async () => {
+	describe('getMemoryInformation', () => {
 		it('should return the correct value for memory usage', async () => {
 			const memoryInfo = await sysInfo.getMemoryInformation();
 			expect(memoryInfo).to.deep.equal({
@@ -163,9 +163,40 @@ describe('System information', () => {
 		});
 	});
 
-	describe('getStorageInfo', async () => {
+	describe('getStorageInfo', () => {
 		it('should return info on /data mount', async () => {
 			(systeminformation.fsSize as SinonStub).resolves(mockFS);
+			const storageInfo = await sysInfo.getStorageInfo();
+			expect(storageInfo).to.deep.equal({
+				blockDevice: '/dev/mmcblk0p6',
+				storageUsed: 1118,
+				storageTotal: 29023,
+			});
+		});
+
+		it('should not double-count usage when the same device has multiple mount points', async () => {
+			const fsWithDuplicateMounts = [
+				...mockFS,
+				{
+					fs: '/dev/mmcblk0p6',
+					type: 'ext4',
+					size: 30433308672,
+					used: 1172959232,
+					available: 27684696064,
+					use: 4.06,
+					mount: '/mnt/root/mnt/data',
+				},
+				{
+					fs: '/dev/mmcblk0p6',
+					type: 'ext4',
+					size: 30433308672,
+					used: 1172959232,
+					available: 27684696064,
+					use: 4.06,
+					mount: '/etc/hostname',
+				},
+			];
+			(systeminformation.fsSize as SinonStub).resolves(fsWithDuplicateMounts);
 			const storageInfo = await sysInfo.getStorageInfo();
 			expect(storageInfo).to.deep.equal({
 				blockDevice: '/dev/mmcblk0p6',

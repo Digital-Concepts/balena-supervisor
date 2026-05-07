@@ -66,7 +66,7 @@ export class ConfigFs extends ConfigBackend {
 		try {
 			const loadedTables = await this.listLoadedAcpiTables();
 
-			if (loadedTables.indexOf(aml) < 0) {
+			if (!loadedTables.includes(aml)) {
 				await fs.mkdir(amlDstPath);
 			}
 
@@ -151,7 +151,7 @@ export class ConfigFs extends ConfigBackend {
 		return this;
 	}
 
-	public async matches(deviceType: string): Promise<boolean> {
+	public matches(deviceType: string): boolean {
 		return ConfigFs.SupportedDeviceTypes.includes(deviceType);
 	}
 

@@ -19,6 +19,9 @@ import {
 	expectNoStep,
 } from '~/test-lib/state-helper';
 import type { InstancedAppState } from '~/src/compose/types';
+import * as extraFirmware from '~/lib/extra-firmware';
+import * as testDb from '~/src/db';
+import * as dbFormat from '~/src/device-state/db-format';
 
 // TODO: application manager inferNextSteps still queries some stuff from
 // the engine instead of receiving that information as parameter. Refactoring
@@ -39,6 +42,8 @@ describe('compose/application-manager', () => {
 	beforeEach(async () => {
 		// Set up network by default
 		await networkManager.ensureSupervisorNetwork();
+		// Create extra firmware volume
+		await extraFirmware.initialize(config.configJsonBackend);
 	});
 
 	afterEach(async () => {
@@ -444,9 +449,10 @@ describe('compose/application-manager', () => {
 					abortSignal: new AbortController().signal,
 				},
 			);
-			// There should be two noop steps, one for target service which is still downloading,
-			// and one for current service which is waiting on target download to complete.
-			expectSteps('noop', steps, 2);
+			// There should be three noop steps, one for target service which is still downloading,
+			// one for current service which is waiting on target download to complete,
+			// and one for current service which needs metadata update but is waiting for downloads.
+			expectSteps('noop', steps, 3);
 			// No kill step yet
 			expectNoStep('kill', steps);
 
@@ -1343,6 +1349,31 @@ describe('compose/application-manager', () => {
 		expect(steps.filter((s) => s.action === 'removeVolume')).to.be.empty;
 	});
 
+	it('should infer to configure extra firmware volume if it is not configured', async () => {
+		const docker = new Docker();
+		await docker.getVolume('extra-firmware').remove();
+
+		const targetApps = createApps({ networks: [DEFAULT_NETWORK] }, true);
+		const { currentApps, availableImages, downloading, containerIdsByAppId } =
+			createCurrentState({
+				services: [],
+				networks: [DEFAULT_NETWORK],
+			});
+
+		const [createExtraFirmwareVolumeStep, ...nextSteps] =
+			await applicationManager.inferNextSteps(currentApps, targetApps, {
+				downloading,
+				availableImages,
+				containerIdsByAppId,
+				abortSignal: new AbortController().signal,
+			});
+
+		expect(createExtraFirmwareVolumeStep).to.deep.include({
+			action: 'ensureExtraFirmwareVolume',
+		});
+		expect(nextSteps).to.have.lengthOf(0);
+	});
+
 	it('should infer that we need to create the supervisor network if it does not exist', async () => {
 		const docker = new Docker();
 		await docker.getNetwork('supervisor0').remove();
@@ -1790,12 +1821,8 @@ describe('compose/application-manager', () => {
 		);
 
 		// Expect a start step for both apps
-		expect(
-			steps.filter((s: any) => s.target && s.target.appId === 1),
-		).to.have.lengthOf(0);
-		expect(
-			steps.filter((s: any) => s.image && s.image.appId === 1),
-		).to.have.lengthOf(0);
+		expect(steps.filter((s: any) => s.target?.appId === 1)).to.have.lengthOf(0);
+		expect(steps.filter((s: any) => s.image?.appId === 1)).to.have.lengthOf(0);
 		expect(
 			steps.filter(
 				(s: any) =>
@@ -2687,9 +2714,12 @@ describe('compose/application-manager', () => {
 			getServicesState = sinon.stub(serviceManager, 'getState');
 		});
 
-		afterEach(() => {
+		afterEach(async () => {
 			getImagesState.reset();
 			getServicesState.reset();
+
+			// Delete all apps between calls to prevent leaking tests
+			await testDb.models('app').del();
 		});
 
 		after(() => {
@@ -2698,6 +2728,51 @@ describe('compose/application-manager', () => {
 		});
 
 		it('reports the state of images if no service is available', async () => {
+			const apiEndpoint = await config.get('apiEndpoint');
+			await dbFormat.setApps(
+				{
+					myapp: {
+						id: 1,
+						name: 'my-app',
+						class: 'fleet',
+						releases: {
+							latestrelease: {
+								id: 1,
+								services: {
+									ubuntu: {
+										id: 1,
+										image_id: 1,
+										image: 'ubuntu:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									alpine: {
+										id: 2,
+										image_id: 2,
+										image: 'alpine:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									node: {
+										id: 3,
+										image_id: 3,
+										image: 'node:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+								},
+								volumes: {},
+								networks: {},
+							},
+						},
+					},
+				},
+				apiEndpoint,
+			);
+
 			getImagesState.resolves([
 				{
 					name: 'ubuntu:latest',
@@ -2746,6 +2821,13 @@ describe('compose/application-manager', () => {
 									status: 'Downloading',
 									download_progress: 50,
 								},
+								// the node image is reported with 0% even though is not
+								// yet on the images state list
+								node: {
+									image: 'node:latest',
+									status: 'Downloading',
+									download_progress: 0,
+								},
 							},
 							update_status: 'downloading',
 						},
@@ -2778,6 +2860,50 @@ describe('compose/application-manager', () => {
 		});
 
 		it('augments the service data with image data', async () => {
+			const apiEndpoint = await config.get('apiEndpoint');
+			await dbFormat.setApps(
+				{
+					myapp: {
+						id: 1,
+						name: 'my-app',
+						class: 'fleet',
+						releases: {
+							latestrelease: {
+								id: 1,
+								services: {
+									ubuntu: {
+										id: 1,
+										image_id: 1,
+										image: 'ubuntu:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									alpine: {
+										id: 2,
+										image_id: 2,
+										image: 'alpine:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									node: {
+										id: 3,
+										image_id: 3,
+										image: 'node:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+								},
+								volumes: {},
+								networks: {},
+							},
+						},
+					},
+				},
+				apiEndpoint,
+			);
 			getImagesState.resolves([
 				{
 					name: 'ubuntu:latest',
@@ -2785,14 +2911,6 @@ describe('compose/application-manager', () => {
 					appUuid: 'myapp',
 					serviceName: 'ubuntu',
 					status: 'Downloaded',
-				},
-				{
-					name: 'node:latest',
-					commit: 'latestrelease',
-					appUuid: 'myapp',
-					serviceName: 'node',
-					status: 'Downloading',
-					downloadProgress: 0,
 				},
 				{
 					name: 'alpine:latest',
@@ -2874,6 +2992,226 @@ describe('compose/application-manager', () => {
 			});
 		});
 
+		it('reports downloading if there are pending service images', async () => {
+			const apiEndpoint = await config.get('apiEndpoint');
+			await dbFormat.setApps(
+				{
+					myapp: {
+						id: 1,
+						name: 'my-app',
+						class: 'fleet',
+						releases: {
+							latestrelease: {
+								id: 1,
+								services: {
+									ubuntu: {
+										id: 1,
+										image_id: 1,
+										image: 'ubuntu:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									alpine: {
+										id: 2,
+										image_id: 2,
+										image: 'alpine:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									node: {
+										id: 3,
+										image_id: 3,
+										image: 'node:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+								},
+								volumes: {},
+								networks: {},
+							},
+						},
+					},
+				},
+				apiEndpoint,
+			);
+
+			getImagesState.resolves([
+				{
+					name: 'ubuntu:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'ubuntu',
+					status: 'Downloaded',
+					downloadProgress: 100,
+				},
+				{
+					name: 'alpine:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'alpine',
+					status: 'Downloaded',
+				},
+			]);
+			getServicesState.resolves([]);
+
+			expect(await applicationManager.getState()).to.deep.equal({
+				myapp: {
+					releases: {
+						latestrelease: {
+							services: {
+								ubuntu: {
+									image: 'ubuntu:latest',
+									status: 'Downloaded',
+									download_progress: 100,
+								},
+								alpine: {
+									image: 'alpine:latest',
+									status: 'Downloaded',
+								},
+								node: {
+									image: 'node:latest',
+									status: 'Downloading',
+									download_progress: 0,
+								},
+							},
+							update_status: 'downloading',
+						},
+					},
+				},
+			});
+		});
+
+		it('reports downloaded if all service images have been fetched', async () => {
+			getImagesState.resolves([
+				{
+					name: 'ubuntu:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'ubuntu',
+					status: 'Downloaded',
+					downloadProgress: 100,
+				},
+				{
+					name: 'node:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'node',
+					status: 'Downloaded',
+				},
+				{
+					name: 'alpine:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'alpine',
+					status: 'Downloaded',
+				},
+			]);
+			getServicesState.resolves([]);
+
+			expect(await applicationManager.getState()).to.deep.equal({
+				myapp: {
+					releases: {
+						latestrelease: {
+							services: {
+								ubuntu: {
+									image: 'ubuntu:latest',
+									status: 'Downloaded',
+									download_progress: 100,
+								},
+								alpine: {
+									image: 'alpine:latest',
+									status: 'Downloaded',
+								},
+								node: {
+									image: 'node:latest',
+									status: 'Downloaded',
+								},
+							},
+							update_status: 'downloaded',
+						},
+					},
+				},
+			});
+		});
+
+		it('reports done if all services have been started', async () => {
+			getImagesState.resolves([
+				{
+					name: 'ubuntu:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'ubuntu',
+					status: 'Downloaded',
+					downloadProgress: 100,
+				},
+				{
+					name: 'node:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'node',
+					status: 'Downloaded',
+				},
+				{
+					name: 'alpine:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'alpine',
+					status: 'Downloaded',
+				},
+			]);
+			getServicesState.resolves([
+				{
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'ubuntu',
+					status: 'Running',
+					createdAt: new Date('2021-09-01T13:00:00'),
+				},
+				{
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'alpine',
+					status: 'Running',
+					createdAt: new Date('2021-09-01T13:00:00'),
+				},
+				{
+					appUuid: 'myapp',
+					commit: 'latestrelease',
+					serviceName: 'node',
+					status: 'Exited',
+					createdAt: new Date('2021-09-01T12:00:00'),
+				},
+			]);
+
+			expect(await applicationManager.getState()).to.deep.equal({
+				myapp: {
+					releases: {
+						latestrelease: {
+							services: {
+								ubuntu: {
+									image: 'ubuntu:latest',
+									status: 'Running',
+									download_progress: 100,
+								},
+								alpine: {
+									image: 'alpine:latest',
+									status: 'Running',
+								},
+								node: {
+									image: 'node:latest',
+									status: 'Exited',
+								},
+							},
+							update_status: 'done',
+						},
+					},
+				},
+			});
+		});
+
 		it('reports aborted state if one of the services/images status is aborted', async () => {
 			getImagesState.resolves([
 				{
@@ -2942,6 +3280,86 @@ describe('compose/application-manager', () => {
 								},
 							},
 							update_status: 'aborted',
+						},
+					},
+				},
+			});
+		});
+
+		it('reports rejected state if the app is rejected', async () => {
+			const apiEndpoint = await config.get('apiEndpoint');
+			await dbFormat.setApps(
+				{
+					myapp: {
+						id: 1,
+						name: 'my-app',
+						class: 'fleet',
+						releases: {
+							latestrelease: {
+								id: 1,
+								services: {
+									ubuntu: {
+										id: 1,
+										image_id: 1,
+										image: 'ubuntu:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									alpine: {
+										id: 2,
+										image_id: 2,
+										image: 'alpine:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+									node: {
+										id: 3,
+										image_id: 3,
+										image: 'node:latest',
+										environment: {},
+										labels: {},
+										composition: {},
+									},
+								},
+								volumes: {},
+								networks: {},
+							},
+						},
+					},
+				},
+				apiEndpoint,
+				['myapp'],
+			);
+
+			getImagesState.resolves([
+				{
+					appId: 1,
+					name: 'ubuntu:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'ubuntu',
+					status: 'Downloaded',
+				},
+				{
+					appId: 1,
+					name: 'alpine:latest',
+					commit: 'latestrelease',
+					appUuid: 'myapp',
+					serviceName: 'alpine',
+					status: 'Aborted',
+					downloadProgress: 0,
+				},
+			]);
+			getServicesState.resolves([]);
+
+			expect(await applicationManager.getState()).to.deep.equal({
+				myapp: {
+					releases: {
+						latestrelease: {
+							services: {},
+							update_status: 'rejected',
 						},
 					},
 				},
@@ -3172,13 +3590,13 @@ describe('compose/application-manager', () => {
 					abortSignal: new AbortController().signal,
 				});
 
-			[startStep1, startStep2, startStep3, startStep4].forEach((step) => {
+			for (const step of [startStep1, startStep2, startStep3, startStep4]) {
 				expect(step).to.have.property('action').that.equals('start');
 				expect(step)
 					.to.have.property('target')
 					.that.has.property('serviceName')
 					.that.is.oneOf(['one', 'two', 'three', 'four']);
-			});
+			}
 			expect(nextSteps).to.have.lengthOf(0);
 		});
 

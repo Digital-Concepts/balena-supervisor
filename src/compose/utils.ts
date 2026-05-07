@@ -19,8 +19,8 @@ import type {
 } from './types';
 
 import log from '../lib/supervisor-console';
-
 import * as apiKeys from '../lib/api-keys';
+import { getOSBoardRev } from '../lib/os-release';
 
 export function camelCaseConfig(
 	literalConfig: ConfigMap,
@@ -31,7 +31,7 @@ export function camelCaseConfig(
 	// returns true for an array, we check the other way
 	if (!Array.isArray(config.networks)) {
 		const networksTmp = structuredClone(config.networks);
-		_.each(networksTmp, (v, k) => {
+		_.forEach(networksTmp, (v, k) => {
 			config.networks[k] = _.mapKeys(v, (_v, key) => _.camelCase(key));
 		});
 	}
@@ -120,8 +120,7 @@ function processCommandParsedArrayElement(
 
 function commandAsArray(command: string | string[]): string[] {
 	if (typeof command === 'string') {
-		return _.map(
-			parseCommand(processCommandString(command)),
+		return parseCommand(processCommandString(command)).map(
 			processCommandParsedArrayElement,
 		);
 	}
@@ -135,7 +134,7 @@ export function getCommand(
 	if (composeCommand != null) {
 		return commandAsArray(composeCommand);
 	}
-	const imgCommand = _.get(imageInfo, 'Config.Cmd', []);
+	const imgCommand = imageInfo?.Config?.Cmd ?? [];
 	return commandAsArray(imgCommand);
 }
 
@@ -146,7 +145,10 @@ export function getEntryPoint(
 	if (composeEntry != null) {
 		return commandAsArray(composeEntry);
 	}
-	const imgEntry = _.get(imageInfo, 'Config.Entrypoint', []);
+	const imgEntry = imageInfo?.Config?.Entrypoint;
+	if (imgEntry == null) {
+		return [];
+	}
 	return commandAsArray(imgEntry);
 }
 
@@ -163,14 +165,20 @@ export function getStopSignal(
 		}
 		return composeStop;
 	}
-	return _.get(imageInfo, 'Config.StopSignal', 'SIGTERM');
+	return (
+		(
+			imageInfo?.Config as Dockerode.ImageInspectInfo['Config'] & {
+				StopSignal?: string;
+			}
+		)?.StopSignal ?? 'SIGTERM'
+	);
 }
 
 // TODO: Move healthcheck stuff into separate module
 export function dockerHealthcheckToServiceHealthcheck(
-	healthcheck?: Dockerode.DockerHealthcheck,
+	healthcheck?: Dockerode.HealthConfig,
 ): ServiceHealthcheck {
-	if (healthcheck == null || _.isEmpty(healthcheck)) {
+	if (healthcheck?.Test == null) {
 		return { test: ['NONE'] };
 	}
 	const serviceHC: ServiceHealthcheck = {
@@ -247,7 +255,7 @@ export function getHealthcheck(
 ): ServiceHealthcheck {
 	// get the image info healtcheck
 	const imageServiceHealthcheck = dockerHealthcheckToServiceHealthcheck(
-		_.get(imageInfo, 'Config.Healthcheck'),
+		imageInfo?.Config?.Healthcheck,
 	);
 	const composeServiceHealthcheck =
 		composeHealthcheckToServiceHealthcheck(composeHealthcheck);
@@ -262,7 +270,7 @@ export function getHealthcheck(
 
 export function serviceHealthcheckToDockerHealthcheck(
 	healthcheck: ServiceHealthcheck,
-): Dockerode.DockerHealthcheck {
+): Dockerode.HealthConfig {
 	return {
 		Test: healthcheck.test,
 		Interval: healthcheck.interval,
@@ -276,27 +284,24 @@ export function getWorkingDir(
 	workingDir: string | null | undefined,
 	imageInfo?: Dockerode.ImageInspectInfo,
 ): string {
-	return (
-		workingDir != null ? workingDir : _.get(imageInfo, 'Config.WorkingDir', '')
-	).replace(/(^.+)\/$/, '$1');
+	return (workingDir ?? imageInfo?.Config?.WorkingDir ?? '').replace(
+		/(^.+)\/$/,
+		'$1',
+	);
 }
 
 export function getUser(
 	user: string | null | undefined,
 	imageInfo?: Dockerode.ImageInspectInfo,
 ): string {
-	return user != null ? user : _.get(imageInfo, 'Config.User', '');
+	return user ?? imageInfo?.Config?.User ?? '';
 }
 
 export function formatDevice(deviceStr: string): DockerDevice {
 	const [pathOnHost, ...parts] = deviceStr.split(':');
 	let [pathInContainer, cgroup] = parts;
-	if (pathInContainer == null) {
-		pathInContainer = pathOnHost;
-	}
-	if (cgroup == null) {
-		cgroup = 'rwm';
-	}
+	pathInContainer ??= pathOnHost;
+	cgroup ??= 'rwm';
 	return {
 		PathOnHost: pathOnHost,
 		PathInContainer: pathInContainer,
@@ -350,10 +355,8 @@ export async function addFeaturesFromLabels(
 				target: constants.dockerSocket,
 			} as LongBind);
 
-			if (service.config.environment['DOCKER_HOST'] == null) {
-				service.config.environment['DOCKER_HOST'] =
-					`unix://${constants.containerDockerSocket}`;
-			}
+			service.config.environment['DOCKER_HOST'] ??=
+				`unix://${constants.containerDockerSocket}`;
 			// We keep balena.sock for backwards compatibility
 			if (constants.dockerSocket !== '/var/run/balena.sock') {
 				service.config.volumes.push({
@@ -406,6 +409,19 @@ export async function addFeaturesFromLabels(
 				Capabilities: [['gpu']],
 				Options: {},
 			} as Dockerode.DeviceRequest),
+		'io.balena.features.host-os.board-rev': async () => {
+			const osBoardRev = await getOSBoardRev(constants.hostOSVersionPath);
+			if (osBoardRev) {
+				setEnvVariables('HOST_OS_BOARD_REV', osBoardRev);
+			}
+		},
+		'io.balena.features.extra-firmware': () => {
+			service.config.volumes.push({
+				type: 'volume',
+				source: 'extra-firmware',
+				target: '/extra-firmware',
+			} as LongDefinition);
+		},
 	};
 
 	for (const feature of Object.keys(features) as [keyof typeof features]) {
@@ -432,7 +448,7 @@ export function serviceUlimitsToDockerUlimits(
 	ulimits: ServiceConfig['ulimits'] | null | undefined,
 ): Array<{ Name: string; Soft: number; Hard: number }> {
 	const ret: Array<{ Name: string; Soft: number; Hard: number }> = [];
-	_.each(ulimits, ({ soft, hard }, name) => {
+	_.forEach(ulimits, ({ soft, hard }, name) => {
 		ret.push({ Name: name, Soft: soft, Hard: hard });
 	});
 	return ret;
@@ -455,14 +471,14 @@ export function serviceNetworksToDockerNetworks(
 		EndpointsConfig: {},
 	};
 
-	_.each(networks, (net, name) => {
+	_.forEach(networks, (net, name) => {
 		// WHY??? This shouldn't be necessary, as we define it above...
 		if (dockerNetworks.EndpointsConfig != null) {
 			dockerNetworks.EndpointsConfig[name] = {};
 			const conf = dockerNetworks.EndpointsConfig[name];
 			conf.IPAMConfig = {};
 			conf.Aliases = [];
-			_.each(net, (v, k) => {
+			_.forEach(net, (v, k) => {
 				// We know that IPAMConfig is set because of the intialisation
 				// above, but typescript doesn't agree, so use !
 				switch (k) {
@@ -494,7 +510,7 @@ export function dockerNetworkToServiceNetwork(
 	// the correct level and return
 	const networks: ServiceConfig['networks'] = {};
 
-	_.each(dockerNetworks, (net, name) => {
+	_.forEach(dockerNetworks, (net, name) => {
 		networks[name] = {};
 		if (net.Aliases != null && !_.isEmpty(net.Aliases)) {
 			networks[name].aliases = net.Aliases.filter(
@@ -523,7 +539,7 @@ export function dockerNetworkToServiceNetwork(
 
 // Mutates obj
 export function normalizeNullValues(obj: Dictionary<any>): void {
-	_.each(obj, (v, k) => {
+	_.forEach(obj, (v, k) => {
 		if (v == null) {
 			obj[k] = undefined;
 		} else if (_.isObject(v)) {
@@ -536,17 +552,15 @@ export function normalizeLabels(labels: { [key: string]: string }): {
 	[key: string]: string;
 } {
 	const legacyLabels = _.mapKeys(
-		_.pickBy(labels, (_v, k) => _.startsWith(k, 'io.resin.')),
+		_.pickBy(labels, (_v, k) => k.startsWith('io.resin.')),
 		(_v, k) => {
 			return k.replace(/resin/g, 'balena'); // e.g. io.resin.features.resin-api -> io.balena.features.balena-api
 		},
 	);
-	const balenaLabels = _.pickBy(labels, (_v, k) =>
-		_.startsWith(k, 'io.balena.'),
-	);
+	const balenaLabels = _.pickBy(labels, (_v, k) => k.startsWith('io.balena.'));
 	const otherLabels = _.pickBy(
 		labels,
-		(_v, k) => !(_.startsWith(k, 'io.balena.') || _.startsWith(k, 'io.resin.')),
+		(_v, k) => !(k.startsWith('io.balena.') || k.startsWith('io.resin.')),
 	);
 	return Object.assign({}, otherLabels, legacyLabels, balenaLabels);
 }
@@ -627,7 +641,7 @@ export function serviceMountToDockerMount(
 	}
 	if ('bind' in serviceMount && 'propagation' in serviceMount.bind!) {
 		mount.BindOptions = {
-			Propagation: serviceMount.bind!.propagation as Dockerode.MountPropagation,
+			Propagation: serviceMount.bind.propagation as Dockerode.MountPropagation,
 		};
 	}
 	// Although Dockerode.MountSettings type includes some additional options
@@ -636,12 +650,12 @@ export function serviceMountToDockerMount(
 	// Therefore we need to typecast here to satisfy the TS compiler.
 	if ('volume' in serviceMount && 'nocopy' in serviceMount.volume!) {
 		mount.VolumeOptions = {
-			NoCopy: serviceMount.volume!.nocopy,
+			NoCopy: serviceMount.volume.nocopy,
 		} as Dockerode.MountSettings['VolumeOptions'];
 	}
 	if ('tmpfs' in serviceMount && 'size' in serviceMount.tmpfs!) {
 		mount.TmpfsOptions = {
-			SizeBytes: serviceMount.tmpfs!.size,
+			SizeBytes: serviceMount.tmpfs.size,
 		} as Dockerode.MountSettings['TmpfsOptions'];
 	}
 

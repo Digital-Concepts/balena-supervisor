@@ -1,10 +1,8 @@
-import Bluebird from 'bluebird';
 import _ from 'lodash';
 
 import * as config from '../config';
 import * as eventTracker from '../event-tracker';
 import type { LogType } from '../lib/log-types';
-import { takeGlobalLockRW } from '../lib/process-lock';
 import { BalenaLogBackend } from './balena-backend';
 import { LocalLogBackend } from './local-backend';
 import type { LogBackend } from './log-backend';
@@ -65,12 +63,12 @@ export const initialized = _.once(async () => {
 			// is '' for legacy reasons. Once we're totally
 			// typescript, we can make it have a default value
 			// of undefined.
-			if (_.every(conf, Boolean)) {
+			if (Object.values(conf).every(Boolean)) {
 				// Everything is set, provide the values to the
 				// balenaBackend, and remove our listener
 				balenaBackend!.assignFields(
 					conf.logsEndpoint ?? conf.apiEndpoint,
-					conf.uuid!,
+					conf.uuid ?? '',
 					conf.deviceApiKey,
 				);
 			}
@@ -100,7 +98,7 @@ export function getLocalBackend(): LocalLogBackend {
 	return localBackend;
 }
 
-export function enable(value: boolean = true) {
+export function enable(value = true) {
 	if (backend != null) {
 		backend.publishEnabled = value;
 	}
@@ -114,58 +112,47 @@ export function logSystemMessage(
 	message: string,
 	eventObj?: LogEventObject,
 	eventName?: string,
-	track: boolean = true,
+	track = true,
 ) {
 	const msgObj: LogMessage = { message, isSystem: true, timestamp: Date.now() };
-	if (eventObj != null && eventObj.error != null) {
+	if (eventObj?.error != null) {
 		msgObj.isStdErr = true;
 	}
 	// IMPORTANT: this could potentially create a memory leak if logSystemMessage
 	// is used too quickly but we don't want supervisor logging to hold up other tasks
 	void log(msgObj);
 	if (track) {
-		eventTracker.track(
-			eventName != null ? eventName : message,
-			eventObj != null ? eventObj : {},
-		);
+		eventTracker.track(eventName ?? message, eventObj ?? {});
 	}
 }
 
-function lock(containerId: string): Bluebird.Disposer<() => void> {
-	return takeGlobalLockRW(containerId).disposer((release) => {
-		release();
-	});
-}
-
 type ServiceInfo = { serviceId: number };
-export async function attach(
-	containerId: string,
-	{ serviceId }: ServiceInfo,
-): Promise<void> {
+export function attach(containerId: string, { serviceId }: ServiceInfo): void {
 	// First detect if we already have an attached log stream
 	// for this container
 	if (logMonitor.isAttached(containerId)) {
 		return;
 	}
 
-	return Bluebird.using(lock(containerId), async () => {
-		await logMonitor.attach(containerId, async (message) => {
-			await log({ ...message, serviceId });
-		});
+	// We do not grab a container lock here as we are only adding it to the list of container ids to monitor
+	// and not directly affecting the container itself, and grabbing the lock can cause a delay which means
+	// that early messages logged from the container are missed and never sent to the backend.
+	logMonitor.attach(containerId, async (message) => {
+		await log({ ...message, serviceId });
 	});
 }
 
 export function logSystemEvent(
 	logType: LogType,
 	obj: LogEventObject,
-	track: boolean = true,
+	track = true,
 ): void {
 	let message = logType.humanName;
 	const objectName = objectNameForLogs(obj);
 	if (objectName != null) {
 		message += ` '${objectName}'`;
 	}
-	if (obj && obj.error != null) {
+	if (obj?.error != null) {
 		let errorMessage = obj.error.message;
 		if (_.isEmpty(errorMessage)) {
 			errorMessage =
@@ -204,10 +191,8 @@ function objectNameForLogs(eventObj: LogEventObject): string | null {
 		return null;
 	}
 	if (
-		eventObj.service != null &&
-		eventObj.service.serviceName != null &&
-		eventObj.service.config != null &&
-		eventObj.service.config.image != null
+		eventObj.service?.serviceName != null &&
+		eventObj.service.config?.image != null
 	) {
 		return `${eventObj.service.serviceName} ${eventObj.service.config.image}`;
 	}
@@ -216,11 +201,11 @@ function objectNameForLogs(eventObj: LogEventObject): string | null {
 		return eventObj.image.name;
 	}
 
-	if (eventObj.network != null && eventObj.network.name != null) {
+	if (eventObj.network?.name != null) {
 		return eventObj.network.name;
 	}
 
-	if (eventObj.volume != null && eventObj.volume.name != null) {
+	if (eventObj.volume?.name != null) {
 		return eventObj.volume.name;
 	}
 

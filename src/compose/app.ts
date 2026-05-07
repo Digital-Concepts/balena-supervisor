@@ -230,7 +230,9 @@ class AppImpl implements App {
 			}
 
 			return Object.values(this.services).map((service) =>
-				generateStep('kill', { current: service }),
+				service.status === 'Stopping'
+					? generateStep('noop', {})
+					: generateStep('kill', { current: service }),
 			);
 		}
 		if (Object.keys(this.networks).length > 0) {
@@ -295,7 +297,7 @@ class AppImpl implements App {
 
 		// Find those components that change between the current and target state
 		// those will have to be removed first and added later
-		target.forEach((tgt) => {
+		for (const tgt of target) {
 			const curr = current.find(
 				(item) => item.name === tgt.name && !item.isEqualConfig(tgt),
 			);
@@ -303,17 +305,17 @@ class AppImpl implements App {
 				outputs.push({ current: curr, target: tgt });
 				toBeUpdated.push(curr.name);
 			}
-		});
+		}
 
 		if (generateRemoves) {
 			const toBeRemoved: string[] = [];
 			// Find those components that are not part of the target state
-			current.forEach((curr) => {
+			for (const curr of current) {
 				if (!target.find((tgt) => tgt.name === curr.name)) {
 					outputs.push({ current: curr });
 					toBeRemoved.push(curr.name);
 				}
-			});
+			}
 
 			// Find duplicates in the current state and remove them
 			current.forEach((item, index) => {
@@ -334,11 +336,11 @@ class AppImpl implements App {
 		}
 
 		// Find newly created components
-		target.forEach((tgt) => {
+		for (const tgt of target) {
 			if (!current.find((curr) => tgt.name === curr.name)) {
 				outputs.push({ target: tgt });
 			}
-		});
+		}
 
 		return outputs;
 	}
@@ -362,8 +364,8 @@ class AppImpl implements App {
 		updatePairs: Array<ChangingPair<Service>>;
 		dependentServices: Service[];
 	} {
-		const currentByServiceName = _.keyBy(current, 'serviceName');
-		const targetByServiceName = _.keyBy(target, 'serviceName');
+		const currentByServiceName = _.keyBy(current, (s) => s.serviceName);
+		const targetByServiceName = _.keyBy(target, (s) => s.serviceName);
 
 		const currentServiceNames = Object.keys(currentByServiceName);
 		const targetServiceNames = Object.keys(targetByServiceName);
@@ -401,7 +403,9 @@ class AppImpl implements App {
 		// Build up a list of services for a given service name, always using the latest created
 		// service. Any older services will have kill steps emitted
 		for (const serviceName of maybeUpdate) {
-			const currentServiceContainers = _.filter(current, { serviceName });
+			const currentServiceContainers = current.filter(
+				(c) => c.serviceName === serviceName,
+			);
 			if (currentServiceContainers.length > 1) {
 				currentByServiceName[serviceName] = _.maxBy(
 					currentServiceContainers,
@@ -682,27 +686,35 @@ class AppImpl implements App {
 				context.networkPairs,
 				context.volumePairs,
 			);
-			if (
-				!needsSpecialKill &&
-				target != null &&
-				current.isEqualConfig(target, context.containerIds)
-			) {
-				// Update service metadata or start/stop a service
-				return this.generateContainerStep(
-					current,
-					target,
-					context.appsToLock,
-					context.targetApp.services,
-					servicesLocked,
-					context.rebootBreadcrumbSet,
-					context.bootTime,
-				);
-			}
+
+			const dependenciesMetForKill = this.dependenciesMetForServiceKill(
+				context.targetApp,
+				context.availableImages,
+			);
 
 			let strategy: string;
 			let dependenciesMetForStart: boolean;
 			if (target != null) {
 				strategy = getStrategyFromService(target);
+
+				if (
+					!needsSpecialKill &&
+					current.isEqualConfig(target, context.containerIds)
+				) {
+					// Update service metadata or start/stop a service
+					return this.generateContainerStep(
+						current,
+						target,
+						context.appsToLock,
+						context.targetApp.services,
+						servicesLocked,
+						dependenciesMetForKill,
+						context.rebootBreadcrumbSet,
+						context.bootTime,
+						strategy,
+					);
+				}
+
 				dependenciesMetForStart = this.dependenciesMetForServiceStart(
 					target,
 					context.targetApp,
@@ -715,11 +727,6 @@ class AppImpl implements App {
 				strategy = getStrategyFromService(current);
 				dependenciesMetForStart = false;
 			}
-
-			const dependenciesMetForKill = this.dependenciesMetForServiceKill(
-				context.targetApp,
-				context.availableImages,
-			);
 
 			return getStepsFromStrategy(strategy, {
 				current,
@@ -776,18 +783,26 @@ class AppImpl implements App {
 		appsToLock: AppsToLockMap,
 		targetServices: Service[],
 		servicesLocked: boolean,
+		dependenciesMetForKill: boolean,
 		rebootBreadcrumbSet: boolean,
 		bootTime: Date,
+		strategy: string,
 	): CompositionStep[] {
 		// Update container metadata if service release has changed
 		if (current.commit !== target.commit) {
+			// Only take locks once all target images are downloaded,
+			// to respect the download-then-kill strategy.
+			// Otherwise we can hoard the lock during download of other service images.
+			if (strategy === 'download-then-kill' && !dependenciesMetForKill) {
+				return [generateStep('noop', {})];
+			}
 			if (servicesLocked) {
 				return [generateStep('updateMetadata', { current, target })];
 			} else {
 				// Otherwise, take lock for all services first
-				this.services.concat(targetServices).forEach((s) => {
+				for (const s of this.services.concat(targetServices)) {
 					appsToLock[target.appId].add(s.serviceName);
-				});
+				}
 				return [];
 			}
 		} else if (target.config.running !== current.config.running) {
@@ -818,9 +833,9 @@ class AppImpl implements App {
 			} else {
 				// Take lock for all services before stopping container
 				if (!servicesLocked) {
-					this.services.concat(targetServices).forEach((s) => {
+					for (const s of this.services.concat(targetServices)) {
 						appsToLock[target.appId].add(s.serviceName);
-					});
+					}
 					return [];
 				}
 				return [generateStep('stop', { current })];
@@ -867,9 +882,9 @@ class AppImpl implements App {
 				)
 			) {
 				if (!servicesLocked) {
-					this.services
-						.concat(targetApp.services)
-						.forEach((svc) => appsToLock[target.appId].add(svc.serviceName));
+					for (const svc of this.services.concat(targetApp.services)) {
+						appsToLock[target.appId].add(svc.serviceName);
+					}
 					return [];
 				}
 				return [generateStep('start', { target })];
@@ -929,26 +944,24 @@ class AppImpl implements App {
 		// different to a dependency which is in the servicePairs below, as these
 		// are services which are changing). We could have a dependency which is
 		// starting up, but is not yet running.
-		const depCreatedButNotStarted = _.some(this.services, (svc) => {
-			if (target.dependsOn?.includes(svc.serviceName)) {
-				if (
-					svc.status === 'Installing' ||
-					svc.startedAt == null ||
-					svc.createdAt == null ||
-					svc.startedAt < svc.createdAt
-				) {
-					return true;
-				}
-			}
-		});
+		const depCreatedButNotStarted = this.services.some(
+			(svc) =>
+				// assume the service has been started at some point if the status is not
+				// in the list below
+				target.dependsOn?.includes(svc.serviceName) &&
+				['Installing', 'Installed'].includes(svc.status),
+		);
 
 		if (depCreatedButNotStarted) {
 			return false;
 		}
 
-		const dependencyUnmet = _.some(target.dependsOn, (dep) =>
-			_.some(servicePairs, (pair) => pair.target?.serviceName === dep),
-		);
+		const dependencyUnmet =
+			target.dependsOn == null
+				? false
+				: target.dependsOn.some((dep) =>
+						servicePairs.some((pair) => pair.target?.serviceName === dep),
+					);
 
 		if (dependencyUnmet) {
 			return false;
@@ -1006,9 +1019,7 @@ class AppImpl implements App {
 		const jsonVolumes = JSON.parse(app.volumes) ?? {};
 		const volumes = Object.keys(jsonVolumes).map((name) => {
 			const conf = jsonVolumes[name];
-			if (conf.labels == null) {
-				conf.labels = {};
-			}
+			conf.labels ??= {};
 			return Volume.fromComposeObject(name, app.appId, app.uuid, conf);
 		});
 
@@ -1028,10 +1039,11 @@ class AppImpl implements App {
 					firmware: await pathExistsOnRoot('/lib/firmware'),
 					modules: await pathExistsOnRoot('/lib/modules'),
 				}))(),
-				(
-					(await config.get('hostname')) ??
-					(await fs.readFile('/etc/hostname', 'utf-8'))
-				).trim(),
+				(async () =>
+					(
+						(await config.get('hostname')) ??
+						(await fs.readFile('/etc/hostname', 'utf-8'))
+					).trim())(),
 			]);
 
 		const svcOpts = {

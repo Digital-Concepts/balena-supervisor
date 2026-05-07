@@ -2,7 +2,6 @@ import { stripIndent } from 'common-tags';
 import { isLeft } from 'fp-ts/lib/Either';
 import * as t from 'io-ts';
 import _ from 'lodash';
-import type { PinejsClientRequest } from 'pinejs-client-request';
 
 import * as config from '../config';
 import * as eventTracker from '../event-tracker';
@@ -23,7 +22,7 @@ import * as logger from '../logging';
 
 import * as apiHelper from '../lib/api-helper';
 import { readVpnLock } from '../lib/vpn-lock';
-import { startReporting, stateReportErrors } from './report';
+import { startReporting } from './report';
 import { setTimeout } from 'timers/promises';
 
 interface DevicePinInfo {
@@ -76,18 +75,14 @@ export async function healthcheck() {
 	}
 
 	// Check if state report is healthy
-	const stateReportHealthy =
-		!connectivityCheckEnabled ||
-		!deviceState.connected ||
-		stateReportErrors < 3;
+	const stateReportHealthy = !connectivityCheckEnabled || deviceState.connected;
 
 	if (!stateReportHealthy) {
 		log.info(
 			stripIndent`
 			Healthcheck failure - At least ONE of the following conditions must be true:
-				- No connectivityCheckEnabled   ? ${!(connectivityCheckEnabled === true)}
-				- device state is disconnected  ? ${!(deviceState.connected === true)}
-				- stateReportErrors less then 3 ? ${stateReportErrors < 3}`,
+				- connectivity check is disabled   ? ${!(connectivityCheckEnabled === true)}
+				- device state is connected  ? ${deviceState.connected === true}`,
 		);
 		return false;
 	}
@@ -158,19 +153,20 @@ export async function start() {
 	// Update and apply new target state
 	TargetState.emitter.on(
 		'target-state-update',
-		async (targetState, force, isFromApi, cancel) => {
+		// isFromApi is used in poll.ts so can't be removed yet, but isn't used here
+		async (targetState, force, _isFromApi, cancel) => {
 			try {
 				await deviceState.setTarget(targetState);
-				deviceState.triggerApplyTarget({ force, isFromApi, cancel });
+				deviceState.triggerApplyTarget({ force, cancel });
 			} catch (err) {
 				handleTargetUpdateError(err);
 			}
 		},
 	);
 	// Apply new target state
-	TargetState.emitter.on('target-state-apply', (force, isFromApi, cancel) => {
+	TargetState.emitter.on('target-state-apply', (force, _isFromApi, cancel) => {
 		try {
-			deviceState.triggerApplyTarget({ force, isFromApi, cancel });
+			deviceState.triggerApplyTarget({ force, cancel });
 		} catch (err) {
 			handleTargetUpdateError(err);
 		}
@@ -333,7 +329,7 @@ async function pinDevice({ app, commit }: DevicePinInfo) {
 			resource: 'device',
 			id: deviceId,
 			body: {
-				should_be_running__release: releaseId,
+				is_pinned_on__release: releaseId,
 			},
 		});
 
@@ -381,7 +377,7 @@ async function reportInitialEnv(
 			'No config defined in reportInitialEnv',
 		);
 	}
-	for (const [key, value] of _.toPairs(currentConfig)) {
+	for (const [key, value] of Object.entries(currentConfig)) {
 		let varValue = value;
 		// We want to disable local mode when joining a cloud
 		if (key === 'SUPERVISOR_LOCAL_MODE') {
@@ -481,16 +477,18 @@ async function reprovision() {
 export { reprovision };
 
 async function provisionOrRetry(retryDelay: number): Promise<void> {
-	eventTracker.track('Device bootstrap');
-	try {
-		await provision();
-	} catch (e) {
-		eventTracker.track(`Device bootstrap failed, retrying`, {
-			error: e,
-			delay: retryDelay,
-		});
-		await setTimeout(retryDelay);
-		void provisionOrRetry(retryDelay);
+	while (true) {
+		eventTracker.track('Device bootstrap');
+		try {
+			await provision();
+			return;
+		} catch (e) {
+			eventTracker.track(`Device bootstrap failed, retrying`, {
+				error: e,
+				delay: retryDelay,
+			});
+			await setTimeout(retryDelay);
+		}
 	}
 }
 
@@ -545,7 +543,7 @@ async function reportInitialName(
 	}
 }
 
-let balenaApi: PinejsClientRequest | null = null;
+let balenaApi: Awaited<ReturnType<typeof apiHelper.getBalenaApi>> | null = null;
 
 export const initialized = _.once(async () => {
 	await config.initialized();

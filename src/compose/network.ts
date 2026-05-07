@@ -39,7 +39,7 @@ class NetworkImpl implements Network {
 	} {
 		const matchWithAppId = name.match(/^(\d+)_(\S+)/);
 		if (matchWithAppId == null) {
-			const matchWithAppUuid = name.match(/^([0-9a-f-A-F]{32,})_(\S+)/);
+			const matchWithAppUuid = name.match(/^([0-9a-f-A-F]+)_(\S+)/);
 
 			if (!matchWithAppUuid) {
 				throw new InvalidNetworkNameError(name);
@@ -89,7 +89,7 @@ class NetworkImpl implements Network {
 		ret.name = name;
 		ret.appUuid = appUuid;
 
-		const config = network.IPAM?.Config || [];
+		const config = network.IPAM?.Config ?? [];
 
 		ret.config = {
 			driver: network.Driver,
@@ -99,7 +99,9 @@ class NetworkImpl implements Network {
 					...(conf.Subnet && { subnet: conf.Subnet }),
 					...(conf.Gateway && { gateway: conf.Gateway }),
 					...(conf.IPRange && { ipRange: conf.IPRange }),
-					...(conf.AuxAddress && { auxAddress: conf.AuxAddress }),
+					...('AuxAddress' in conf && conf.AuxAddress
+						? { auxAddress: conf.AuxAddress as string }
+						: {}),
 				})),
 				options: network.IPAM?.Options ?? {},
 			},
@@ -136,7 +138,7 @@ class NetworkImpl implements Network {
 		const options = ipam.options ?? {};
 
 		net.config = {
-			driver: network.driver || 'bridge',
+			driver: network.driver ?? 'bridge',
 			ipam: {
 				driver,
 				config: config.map((conf) => ({
@@ -150,14 +152,14 @@ class NetworkImpl implements Network {
 				})) as ComposeNetworkConfig['ipam']['config'],
 				options,
 			},
-			enableIPv6: network.enable_ipv6 || false,
-			internal: network.internal || false,
+			enableIPv6: network.enable_ipv6 ?? false,
+			internal: network.internal ?? false,
 			labels: {
 				'io.balena.app-id': String(appId),
-				...ComposeUtils.normalizeLabels(network.labels || {}),
+				...ComposeUtils.normalizeLabels(network.labels ?? {}),
 			},
-			options: network.driver_opts || {},
-			configOnly: network.config_only || false,
+			options: network.driver_opts ?? {},
+			configOnly: network.config_only ?? false,
 		};
 
 		// Add label if there's non-default ipam config
@@ -299,7 +301,7 @@ class NetworkImpl implements Network {
 		// Check if every ipam config entry has both a subnet and a gateway
 		if (
 			_.some(
-				_.get(config, 'ipam.config', []),
+				config?.ipam?.config ?? [],
 				({ subnet, gateway }) => !subnet || !gateway,
 			)
 		) {

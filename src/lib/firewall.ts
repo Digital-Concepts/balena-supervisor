@@ -97,15 +97,15 @@ function updateSupervisorAccessRules(
 	const matchesIntf = localMode
 		? [[]]
 		: interfaces.map((intf) => [`-i ${intf}`]);
-	matchesIntf.forEach((intf) =>
+	for (const intf of matchesIntf) {
 		supervisorAccessRules.push({
 			comment: 'Supervisor API',
 			action: iptables.RuleAction.Append,
 			proto: 'tcp',
 			matches: [`--dport ${port}`, ...intf],
 			target: 'ACCEPT',
-		}),
-	);
+		});
+	}
 
 	// now block access to the port for any interface, since the above should have allowed legitimate traffic...
 	supervisorAccessRules.push({
@@ -149,12 +149,14 @@ async function applyFirewall(
 	);
 
 	// apply the firewall rules...
-	await exports.applyFirewallMode(firewallMode ?? '');
+	await applyFirewallMode(firewallMode ?? '');
 }
 
 export const ALLOWED_MODES = ['on', 'off', 'auto'];
 
-export async function applyFirewallMode(mode: string) {
+export const applyFirewallMode = async function applyFirewallMode(
+	mode: string,
+) {
 	// only apply valid mode...
 	if (!ALLOWED_MODES.includes(mode)) {
 		log.warn(`Invalid firewall mode: ${mode}. Reverting to state: off`);
@@ -255,4 +257,4 @@ export async function applyFirewallMode(mode: string) {
 			log.debug(`Ruleset:\r\n${err.ruleset}`);
 		}
 	}
-}
+};

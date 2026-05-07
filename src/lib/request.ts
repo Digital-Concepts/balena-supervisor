@@ -1,4 +1,4 @@
-import Bluebird from 'bluebird';
+import pify from 'pify';
 import once from 'lodash/once';
 import requestLib from 'request';
 import resumableRequestLib from 'resumable-request';
@@ -15,27 +15,27 @@ const DEFAULT_REQUEST_TIMEOUT = 59000; // ms
 const DEFAULT_REQUEST_RETRY_INTERVAL = 10000; // ms
 const DEFAULT_REQUEST_RETRY_COUNT = 30;
 
-type PromisifiedRequest = typeof requestLib & {
-	delAsync: (
+type PromisifiedRequest = {
+	del: (
 		uri: string | requestLib.CoreOptions,
-		options?: requestLib.CoreOptions | undefined,
-	) => Bluebird<[requestLib.Response, any]>;
-	putAsync: (
+		options?: requestLib.CoreOptions,
+	) => Promise<[requestLib.Response, any]>;
+	put: (
 		uri: string | requestLib.CoreOptions,
-		options?: requestLib.CoreOptions | undefined,
-	) => Bluebird<[requestLib.Response, any]>;
-	postAsync: (
+		options?: requestLib.CoreOptions,
+	) => Promise<[requestLib.Response, any]>;
+	post: (
 		uri: string | requestLib.CoreOptions,
-		options?: requestLib.CoreOptions | undefined,
-	) => Bluebird<[requestLib.Response, any]>;
-	patchAsync: (
+		options?: requestLib.CoreOptions,
+	) => Promise<[requestLib.Response, any]>;
+	patch: (
 		uri: string | requestLib.CoreOptions,
-		options?: requestLib.CoreOptions | undefined,
-	) => Bluebird<[requestLib.Response, any]>;
-	getAsync: (
+		options?: requestLib.CoreOptions,
+	) => Promise<[requestLib.Response, any]>;
+	get: (
 		uri: string | requestLib.CoreOptions,
-		options?: requestLib.CoreOptions | undefined,
-	) => Bluebird<[requestLib.Response, any]>;
+		options?: requestLib.CoreOptions,
+	) => Promise<[requestLib.Response, any]>;
 };
 
 const getRequestInstances = once(async () => {
@@ -54,12 +54,14 @@ const getRequestInstances = once(async () => {
 		}
 	}
 
+	const headers = {
+		'User-Agent': userAgent,
+	};
+
 	const requestOpts: requestLib.CoreOptions = {
 		gzip: true,
 		timeout: DEFAULT_REQUEST_TIMEOUT,
-		headers: {
-			'User-Agent': userAgent,
-		},
+		headers,
 	};
 
 	const { got } = await import('got');
@@ -72,10 +74,10 @@ const getRequestInstances = once(async () => {
 
 	const requestHandle = requestLib.defaults(requestOpts);
 
-	// @ts-expect-error promisifyAll is a bit wonky
-	const request = Bluebird.promisifyAll(requestHandle, {
+	const request = pify(requestHandle, {
 		multiArgs: true,
-	}) as PromisifiedRequest;
+		excludeMain: true,
+	}) as unknown as PromisifiedRequest;
 	const resumable = resumableRequestLib.defaults(resumableOpts);
 
 	return {
@@ -92,13 +94,12 @@ const getRequestInstances = once(async () => {
 				send: DEFAULT_REQUEST_TIMEOUT,
 				response: DEFAULT_REQUEST_TIMEOUT,
 			},
-			headers: {
-				'User-Agent': userAgent,
-			},
+			headers,
 		}),
 		requestOpts,
 		request,
 		resumable,
+		headers,
 	};
 });
 
@@ -116,4 +117,8 @@ export const getRequestOptions = once(async () => {
 
 export const getResumableRequest = once(async () => {
 	return (await getRequestInstances()).resumable;
+});
+
+export const getDefaultHeaders = once(async () => {
+	return (await getRequestInstances()).headers;
 });

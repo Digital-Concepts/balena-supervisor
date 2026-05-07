@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const _ = require('lodash');
 const CopyWebpackPlugin = require('copy-webpack-plugin');
-const ForkTsCheckerWebpackPlugin = require('fork-ts-checker-webpack-plugin');
 const TerserWebpackPlugin = require('terser-webpack-plugin');
 
 const externalModules = [
@@ -61,7 +60,7 @@ externalModules.push(
 	new RegExp(
 		'^(' +
 			_.reject(maybeOptionalModules, requiredModules)
-				.map(_.escapeRegExp)
+				.map(RegExp.escape)
 				.join('|') +
 			')(/.*)?$',
 	),
@@ -72,17 +71,13 @@ console.log('Using the following dependencies as external:', externalModules);
 module.exports = function (env) {
 	return {
 		mode: env == null || !env.noOptimize ? 'production' : 'development',
-		entry: './src/app.ts',
+		entry: './build/app.js',
 		output: {
 			filename: 'app.js',
 			path: path.resolve(__dirname, 'dist'),
 		},
 		resolve: {
-			extensions: ['.js', '.ts', '.json'],
-			alias: {
-				// Use the es2018 build instead of the default es2015 build
-				'pinejs-client-core': 'pinejs-client-core/es2018',
-			},
+			extensions: ['.js', '.json'],
 		},
 		target: 'node',
 		node: {
@@ -104,7 +99,7 @@ module.exports = function (env) {
 				{
 					include: [
 						new RegExp(
-							_.escapeRegExp(
+							RegExp.escape(
 								// this is the path as of knex@2.5.1
 								path.join('knex', 'lib', 'migrations', 'common'),
 							),
@@ -114,22 +109,9 @@ module.exports = function (env) {
 				},
 				{
 					test: new RegExp(
-						_.escapeRegExp(path.join('JSONStream', 'index.js')) + '$',
+						RegExp.escape(path.join('JSONStream', 'index.js')) + '$',
 					),
 					use: require.resolve('./build-utils/fix-jsonstream'),
-				},
-				{
-					test: /\.ts$|\.js$/,
-					exclude: /node_modules/,
-					use: [
-						{
-							loader: 'ts-loader',
-							options: {
-								transpileOnly: true,
-								configFile: 'tsconfig.release.json',
-							},
-						},
-					],
 				},
 				{
 					test: /\.node$/,
@@ -151,9 +133,6 @@ module.exports = function (env) {
 			return callback();
 		},
 		plugins: [
-			new ForkTsCheckerWebpackPlugin({
-				async: false,
-			}),
 			new CopyWebpackPlugin({
 				patterns: [
 					{

@@ -1,7 +1,7 @@
 import { expect } from 'chai';
 import type { SinonStub } from 'sinon';
 import { stub, spy, useFakeTimers } from 'sinon';
-import Docker from 'dockerode';
+import Docker, { type ContainerInspectInfo } from 'dockerode';
 import request from 'supertest';
 import { setTimeout } from 'timers/promises';
 import { testfs } from 'mocha-pod';
@@ -20,6 +20,8 @@ import * as lockfile from '~/lib/lockfile';
 import { cleanupDocker } from '~/test-lib/docker-helper';
 import { getBlink } from '~/lib/blink';
 import type { Blink } from '~/lib/blink';
+import { EXTRA_FIRMWARE_VOLUME_NAME } from '~/lib/extra-firmware';
+import { waitFor } from '~/test-lib/helper';
 
 export async function dbusSend(
 	dest: string,
@@ -56,7 +58,9 @@ describe('regenerates API keys', () => {
 	// Stub external dependency - current state report should be tested separately.
 	// API key related methods are tested in api-keys.spec.ts.
 	beforeEach(() => stub(deviceState, 'reportCurrentState'));
-	afterEach(() => (deviceState.reportCurrentState as SinonStub).restore());
+	afterEach(() => {
+		(deviceState.reportCurrentState as SinonStub).restore();
+	});
 
 	it("communicates new key to cloud if it's a global key", async () => {
 		const originalGlobalKey = await apiKeys.getGlobalApiKey();
@@ -83,16 +87,17 @@ describe('regenerates API keys', () => {
 describe('manages application lifecycle', () => {
 	const BASE_IMAGE = 'alpine:latest';
 	const BALENA_SUPERVISOR_ADDRESS =
-		process.env.BALENA_SUPERVISOR_ADDRESS || 'http://balena-supervisor:48484';
+		process.env.BALENA_SUPERVISOR_ADDRESS ?? 'http://balena-supervisor:48484';
 	const APP_ID = 1;
 	const lockdir = pathOnRoot(updateLock.BASE_LOCK_DIR);
 	const docker = new Docker();
 
 	const getSupervisorTarget = async () =>
-		await request(BALENA_SUPERVISOR_ADDRESS)
-			.get('/v2/local/target-state')
-			.expect(200)
-			.then(({ body }) => body.state.local);
+		(
+			await request(BALENA_SUPERVISOR_ADDRESS)
+				.get('/v2/local/target-state')
+				.expect(200)
+		).body.state.local;
 
 	const setSupervisorTarget = async (
 		target: Awaited<ReturnType<typeof generateTarget>>,
@@ -205,21 +210,23 @@ describe('manages application lifecycle', () => {
 		// This test suite will timeout if anything goes wrong, since
 		// we don't have any way of knowing whether Docker has finished
 		// setting up containers or not.
-		let containers = await docker.listContainers({ all: true });
-		let containerInspects = await Promise.all(
-			containers.map(({ Id }) => docker.getContainer(Id).inspect()),
-		);
-		while (
-			expected !== containers.length ||
-			!isWaitComplete(containerInspects)
-		) {
-			await setTimeout(500);
-			containers = await docker.listContainers({ all: true });
-			containerInspects = await Promise.all(
-				containers.map(({ Id }) => docker.getContainer(Id).inspect()),
-			);
-		}
-		return containerInspects;
+		let containerInspects: ContainerInspectInfo[];
+		await waitFor({
+			checkFn: async () => {
+				const containers = await docker.listContainers({ all: true });
+				if (expected !== containers.length) {
+					return false;
+				}
+				containerInspects = await Promise.all(
+					containers.map(({ Id }) => docker.getContainer(Id).inspect()),
+				);
+
+				return isWaitComplete(containerInspects);
+			},
+			delayMs: 500,
+			maxWait: 60000,
+		});
+		return containerInspects!;
 	};
 
 	// Get NEW container inspects. This function should be passed to waitForSetup
@@ -287,10 +294,10 @@ describe('manages application lifecycle', () => {
 			containers = await waitForSetup(targetState);
 			// Containers should have correct metadata;
 			// Testing their names should be sufficient.
-			containers.forEach((ctn) => {
+			for (const ctn of containers) {
 				expect(serviceNames.some((name) => new RegExp(name).test(ctn.Name))).to
 					.be.true;
-			});
+			}
 		});
 
 		it('should restart an application by recreating containers', async () => {
@@ -606,7 +613,7 @@ describe('manages application lifecycle', () => {
 
 			// Start the container
 			const containerToStart = containers.find(({ Name }) =>
-				new RegExp(serviceNames[0]).test(Name),
+				Name.includes('server'),
 			);
 			if (!containerToStart) {
 				expect.fail(
@@ -621,7 +628,7 @@ describe('manages application lifecycle', () => {
 
 			// First, stop the container so we can test the start step
 			const containerToStop = containers.find((ctn) =>
-				new RegExp(serviceNames[0]).test(ctn.Name),
+				ctn.Name.includes('server'),
 			);
 			if (!containerToStop) {
 				expect.fail(
@@ -720,13 +727,22 @@ describe('manages application lifecycle', () => {
 			// Get volume metadata. As the name stays the same, we just need to check that the volume
 			// has been deleted & recreated. We can use the CreatedAt timestamp to determine this.
 			const volume = (await docker.listVolumes()).Volumes.find((vol) =>
-				/data/.test(vol.Name),
+				vol.Name.includes('data'),
 			);
 			if (!volume) {
 				expect.fail('Expected initial volume with name matching "data"');
 			}
 			// CreatedAt is a valid key but isn't typed properly
 			const createdAt = (volume as any).CreatedAt;
+
+			// Get extra-firmware volume metadata to verify it is also purged
+			const extraFirmwareVolume = (await docker.listVolumes()).Volumes.find(
+				(vol) => vol.Name === EXTRA_FIRMWARE_VOLUME_NAME,
+			);
+			if (!extraFirmwareVolume) {
+				expect.fail('Expected extra-firmware volume to exist');
+			}
+			const extraFirmwareCreatedAt = (extraFirmwareVolume as any).CreatedAt;
 
 			// Calling actions.doPurge won't work as intended because purge relies on
 			// setting and applying intermediate state before applying target state again,
@@ -754,12 +770,23 @@ describe('manages application lifecycle', () => {
 
 			// Volume should be recreated
 			const newVolume = (await docker.listVolumes()).Volumes.find((vol) =>
-				/data/.test(vol.Name),
+				vol.Name.includes('data'),
 			);
 			if (!volume) {
 				expect.fail('Expected recreated volume with name matching "data"');
 			}
 			expect((newVolume as any).CreatedAt).to.not.equal(createdAt);
+
+			// Extra-firmware volume should also be recreated
+			const newExtraFirmwareVolume = (await docker.listVolumes()).Volumes.find(
+				(vol) => vol.Name === EXTRA_FIRMWARE_VOLUME_NAME,
+			);
+			if (!newExtraFirmwareVolume) {
+				expect.fail('Expected extra-firmware volume to exist after purge');
+			}
+			expect((newExtraFirmwareVolume as any).CreatedAt).to.not.equal(
+				extraFirmwareCreatedAt,
+			);
 		});
 	});
 
@@ -791,10 +818,10 @@ describe('manages application lifecycle', () => {
 			containers = await waitForSetup(targetState);
 			// Containers should have correct metadata;
 			// Testing their names should be sufficient.
-			containers.forEach((ctn) => {
+			for (const ctn of containers) {
 				expect(serviceNames.some((name) => new RegExp(name).test(ctn.Name))).to
 					.be.true;
-			});
+			}
 		});
 
 		it('should restart an application by recreating containers', async () => {
@@ -1117,7 +1144,7 @@ describe('manages application lifecycle', () => {
 
 			// Start the container
 			const containerToStart = containers.find(({ Name }) =>
-				new RegExp(serviceNames[0]).test(Name),
+				Name.includes('server'),
 			);
 			if (!containerToStart) {
 				expect.fail(
@@ -1132,7 +1159,7 @@ describe('manages application lifecycle', () => {
 
 			// First, stop the container so we can test the start step
 			const containerToStop = containers.find((ctn) =>
-				new RegExp(serviceNames[0]).test(ctn.Name),
+				ctn.Name.includes('server'),
 			);
 			if (!containerToStop) {
 				expect.fail(
@@ -1174,13 +1201,22 @@ describe('manages application lifecycle', () => {
 			// Get volume metadata. As the name stays the same, we just need to check that the volume
 			// has been deleted & recreated. We can use the CreatedAt timestamp to determine this.
 			const volume = (await docker.listVolumes()).Volumes.find((vol) =>
-				/data/.test(vol.Name),
+				vol.Name.includes('data'),
 			);
 			if (!volume) {
 				expect.fail('Expected initial volume with name matching "data"');
 			}
 			// CreatedAt is a valid key but isn't typed properly
 			const createdAt = (volume as any).CreatedAt;
+
+			// Get extra-firmware volume metadata to verify it is also purged
+			const extraFirmwareVolume = (await docker.listVolumes()).Volumes.find(
+				(vol) => vol.Name === EXTRA_FIRMWARE_VOLUME_NAME,
+			);
+			if (!extraFirmwareVolume) {
+				expect.fail('Expected extra-firmware volume to exist');
+			}
+			const extraFirmwareCreatedAt = (extraFirmwareVolume as any).CreatedAt;
 
 			// Calling actions.doPurge won't work as intended because purge relies on
 			// setting and applying intermediate state before applying target state again,
@@ -1208,12 +1244,23 @@ describe('manages application lifecycle', () => {
 
 			// Volume should be recreated
 			const newVolume = (await docker.listVolumes()).Volumes.find((vol) =>
-				/data/.test(vol.Name),
+				vol.Name.includes('data'),
 			);
 			if (!volume) {
 				expect.fail('Expected recreated volume with name matching "data"');
 			}
 			expect((newVolume as any).CreatedAt).to.not.equal(createdAt);
+
+			// Extra-firmware volume should also be recreated
+			const newExtraFirmwareVolume = (await docker.listVolumes()).Volumes.find(
+				(vol) => vol.Name === EXTRA_FIRMWARE_VOLUME_NAME,
+			);
+			if (!newExtraFirmwareVolume) {
+				expect.fail('Expected extra-firmware volume to exist after purge');
+			}
+			expect((newExtraFirmwareVolume as any).CreatedAt).to.not.equal(
+				extraFirmwareCreatedAt,
+			);
 		});
 	});
 });

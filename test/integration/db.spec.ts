@@ -20,7 +20,8 @@ async function createOldDatabase(path: string) {
 	) =>
 		db.schema.createTable(name, (t) => {
 			if (fn != null) {
-				return fn(t);
+				fn(t);
+				return;
 			}
 		});
 
@@ -41,9 +42,11 @@ async function createOldDatabase(path: string) {
 }
 
 async function restoreDb() {
-	await fs.unlink(constants.databasePath).catch(() => {
+	try {
+		await fs.unlink(constants.databasePath);
+	} catch {
 		/* NOOP */
-	});
+	}
 	// Reset the module cache to allow the database to be initialized again
 	delete require.cache[require.resolve('~/src/db')];
 }

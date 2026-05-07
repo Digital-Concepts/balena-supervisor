@@ -162,9 +162,7 @@ export const schemaTypes = {
 		default: false,
 	},
 	pinDevice: {
-		type: new StringJSON<{ app: number; commit: string }>(
-			t.interface({ app: t.number, commit: t.string }),
-		),
+		type: new StringJSON(t.interface({ app: t.number, commit: t.string })),
 		default: NullOrUndefined,
 	},
 	targetStateSet: {
@@ -190,6 +188,14 @@ export const schemaTypes = {
 	developmentMode: {
 		type: PermissiveBoolean,
 		default: false,
+	},
+	reportedTags: {
+		type: new StringJSON(t.record(t.string, t.string)),
+		default: NullOrUndefined,
+	},
+	targetTags: {
+		type: new StringJSON(t.record(t.string, t.string)),
+		default: NullOrUndefined,
 	},
 
 	// Function schema types

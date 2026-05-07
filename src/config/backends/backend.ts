@@ -7,7 +7,7 @@ export abstract class ConfigBackend {
 	public abstract matches(
 		deviceType: string,
 		metaRelease?: string,
-	): Promise<boolean>;
+	): Resolvable<boolean>;
 
 	// A function which reads and parses the configuration options from
 	// specific boot config
@@ -43,12 +43,12 @@ export abstract class ConfigBackend {
 
 	// Is a reboot required for the given config options?
 	// eslint-disable-next-line @typescript-eslint/no-unused-vars
-	public async isRebootRequired(_opts: ConfigOptions): Promise<boolean> {
+	public isRebootRequired(_opts: ConfigOptions): Resolvable<boolean> {
 		return true;
 	}
 
 	// Allow a chosen config backend to be initialised
-	public async initialise(): Promise<ConfigBackend> {
+	public initialise(): Resolvable<ConfigBackend> {
 		return this;
 	}
 

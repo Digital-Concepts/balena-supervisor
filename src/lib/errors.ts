@@ -1,4 +1,3 @@
-import { endsWith } from 'lodash';
 import { TypedError } from 'typed-error';
 
 import { checkInt } from './validation';
@@ -62,8 +61,14 @@ export const isEISDIR = (e: unknown): e is CodedSysError =>
 export const isEPERM = (e: unknown): e is CodedSysError =>
 	isCodedSysError(e) && e.code === 'EPERM';
 
+// AbortError is not an exported error type, see: https://github.com/nodejs/node/issues/38361
+export const isAbortError = (
+	e: unknown,
+): e is CodedSysError & { name: 'AbortError'; code: 'ABORT_ERR' } =>
+	isCodedSysError(e) && e.name === 'AbortError' && e.code === 'ABORT_ERR';
+
 export function UnitNotLoadedError(err: string[]): boolean {
-	return endsWith(err[0], 'not loaded.');
+	return err[0]?.endsWith('not loaded.') ?? false;
 }
 
 export class InvalidNetGatewayError extends TypedError {}
@@ -71,11 +76,8 @@ export class InvalidNetGatewayError extends TypedError {}
 export class DeltaStillProcessingError extends TypedError {}
 
 export class DeltaServerError extends StatusError {}
-export class DeltaApplyError extends Error {
-	constructor(message?: string) {
-		super(message);
-	}
-}
+
+export class DeltaApplyError extends TypedError {}
 
 export class UpdatesLockedError extends TypedError {}
 

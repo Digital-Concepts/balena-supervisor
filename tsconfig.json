@@ -1,9 +1,8 @@
 {
   "compilerOptions": {
-    "baseUrl": "./",
-    "target": "ES2022",
-    "module": "Node16",
-    "moduleResolution": "Node16",
+    "rootDir": "./",
+    "target": "ES2025",
+    "module": "node20",
     "strict": true,
     "strictFunctionTypes": false,
     "strictPropertyInitialization": false,
@@ -13,18 +12,23 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "allowJs": true,
+    "noUnusedParameters": true,
+    "noUnusedLocals": true,
+    "types": [
+      "mocha"
+    ],
     "paths": {
       "~/src/*": [
-        "src/*"
+        "./src/*"
       ],
       "~/lib/*": [
-        "src/lib/*"
+        "./src/lib/*"
       ],
       "~/test-lib/*": [
-        "test/lib/*"
+        "./test/lib/*"
       ],
       "~/test-data/*": [
-        "test/data/*"
+        "./test/data/*"
       ]
     }
   },

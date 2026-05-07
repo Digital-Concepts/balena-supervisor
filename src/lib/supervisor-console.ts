@@ -1,4 +1,3 @@
-import _ from 'lodash';
 import type { TransformableInfo } from 'logform';
 import winston from 'winston';
 
@@ -24,9 +23,9 @@ const colors: { [key in logLevel]: string | string[] } = {
 	api: ['black', 'bgWhite'],
 };
 
-const maxLevelLength = _(levels)
-	.map((_v, k) => k.length)
-	.max();
+const maxLevelLength = Object.keys(levels)
+	.map((k) => k.length)
+	.reduce((a, b) => Math.max(a, b), 0);
 
 const uncolorize = winston.format.uncolorize();
 
@@ -36,9 +35,8 @@ const formatter = winston.format.printf((args) => {
 		level: true,
 		message: true,
 	}) as TransformableInfo;
-	return `[${timestamp}] [${level}]${_.repeat(
-		' ',
-		maxLevelLength! - strippedLevel.length + 1,
+	return `[${timestamp}] [${level}]${' '.repeat(
+		maxLevelLength - strippedLevel.length + 1,
 	)}${message}`;
 });
 
@@ -48,7 +46,11 @@ export const winstonLog = winston.createLogger({
 		winston.format.colorize(),
 		formatter,
 	),
-	transports: [new winston.transports.Console()],
+	transports: [
+		new winston.transports.Console({
+			stderrLevels: ['error', 'warn'],
+		}),
+	],
 	// In the future we can reduce this logging level in
 	// certain scenarios, but for now we don't want to ignore
 	// any debugging without a rock solid method of making

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await */
 process.env.DOCKER_HOST = 'unix:///your/dockerode/mocks/are/not/working';
 
 import Dockerode from 'dockerode';
@@ -54,7 +55,7 @@ registerOverride(
 	async () =>
 		new Stream.Readable({
 			read: () => {
-				return _.noop();
+				_.noop();
 			},
 		}),
 );
@@ -202,19 +203,19 @@ function createMockedDockerode(data: TestData) {
 type Prototype = { [key: string]: any };
 function clonePrototype(prototype: Prototype): Prototype {
 	const clone: Prototype = {};
-	Object.getOwnPropertyNames(prototype).forEach((fn) => {
+	for (const fn of Object.getOwnPropertyNames(prototype)) {
 		if (fn !== 'constructor' && typeof prototype[fn] === 'function') {
 			clone[fn] = prototype[fn];
 		}
-	});
+	}
 
 	return clone;
 }
 
 function assignPrototype(target: Prototype, source: Prototype) {
-	Object.keys(source).forEach((fn) => {
+	for (const fn of Object.keys(source)) {
 		target[fn] = source[fn];
-	});
+	}
 }
 
 export async function testWithData(

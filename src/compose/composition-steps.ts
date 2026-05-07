@@ -10,6 +10,7 @@ import { setRebootBreadcrumb } from '../lib/reboot';
 import type { DeviceLegacyReport } from '../types/state';
 import type { CompositionStepAction, CompositionStepT } from './types';
 import type { Lock } from '../lib/update-lock';
+import * as extraFirmware from '../lib/extra-firmware';
 
 export type {
 	CompositionStep,
@@ -50,7 +51,7 @@ export function getExecutors(app: { callbacks: CompositionCallbacks }) {
 			// so the call is executed assuming that the lock is taken.
 			await serviceManager.kill(step.current, {
 				removeContainer: false,
-				wait: step.options?.wait || false,
+				wait: step.options?.wait ?? false,
 			});
 		},
 		kill: async (step) => {
@@ -101,7 +102,7 @@ export function getExecutors(app: { callbacks: CompositionCallbacks }) {
 			await images.triggerFetch(
 				step.image,
 				opts,
-				async (success) => {
+				(success) => {
 					app.callbacks.fetchEnd();
 					const elapsed = process.hrtime(startTime);
 					const elapsedMs = elapsed[0] * 1000 + elapsed[1] / 1e6;
@@ -161,6 +162,9 @@ export function getExecutors(app: { callbacks: CompositionCallbacks }) {
 		},
 		requireReboot: async (step) => {
 			await setRebootBreadcrumb({ serviceName: step.serviceName });
+		},
+		ensureExtraFirmwareVolume: async () => {
+			await extraFirmware.initialize(config.configJsonBackend);
 		},
 	};
 

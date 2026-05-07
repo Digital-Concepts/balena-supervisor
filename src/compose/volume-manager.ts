@@ -2,16 +2,15 @@ import _ from 'lodash';
 import path from 'path';
 import type { VolumeInspectInfo } from 'dockerode';
 
-import { isNotFoundError, InternalInconsistencyError } from '../lib/errors';
+import { isNotFoundError } from '../lib/errors';
 import { safeRename } from '../lib/fs-utils';
 import { pathOnData } from '../lib/host-utils';
 import { docker } from '../lib/docker-utils';
 import * as LogTypes from '../lib/log-types';
-import log from '../lib/supervisor-console';
 import * as logger from '../logging';
 import { ResourceRecreationAttemptError } from './errors';
 import type { VolumeConfig } from './types';
-import { Volume } from './volume';
+import { Volume, VolumeNameParsingError } from './volume';
 
 export interface VolumeNameOpts {
 	name: string;
@@ -27,24 +26,25 @@ export async function get({ name, appId }: VolumeNameOpts): Promise<Volume> {
 export async function getAll(): Promise<Volume[]> {
 	const volumes = await list();
 	// Normalize inspect information to Volume types and filter any that fail
-	return volumes.reduce((volumesList, volumeInfo) => {
+	return volumes.reduce<Volume[]>((volumesList, volumeInfo) => {
 		try {
 			const volume = Volume.fromDockerVolume(volumeInfo);
 			volumesList.push(volume);
 		} catch (err) {
-			if (err instanceof InternalInconsistencyError) {
-				log.debug(`Found unmanaged or anonymous Volume: ${volumeInfo.Name}`);
+			if (err instanceof VolumeNameParsingError) {
+				// Ignore volume as it's an unmanaged (not part of an app that's managed by the Supervisor),
+				// an anonymous volume (a volume declared via VOLUME directive in Dockerfile), or the extra firmware volume.
 			} else {
 				throw err;
 			}
 		}
 		return volumesList;
-	}, [] as Volume[]);
+	}, []);
 }
 
 export async function getAllByAppId(appId: number): Promise<Volume[]> {
 	const all = await getAll();
-	return _.filter(all, { appId });
+	return all.filter((volume) => volume.appId === appId);
 }
 
 export async function create(volume: Volume): Promise<void> {
@@ -125,10 +125,10 @@ export async function removeOrphanedVolumes(
 		.filter((m) => m.Type === 'volume')
 		// We know that the name must be set, if the mount is
 		// a volume
-		.map((m) => m.Name as string)
+		.map((m) => m.Name!)
 		.uniq()
 		.value();
-	const volumeNames = _.map(dockerVolumes.Volumes, 'Name');
+	const volumeNames = (dockerVolumes.Volumes ?? []).map((v) => v.Name);
 
 	const volumesToRemove = _.difference(
 		volumeNames,

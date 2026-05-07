@@ -31,6 +31,7 @@ import { withLock } from '../lib/update-lock';
 import { promises as fs } from 'fs';
 import { exec } from '../lib/fs-utils';
 import { readFromBoot, writeToBoot } from '../lib/host-utils';
+import * as extraFirmware from '../lib/extra-firmware';
 
 /**
  * Run an array of healthchecks, outputting whether all passed or not
@@ -95,7 +96,7 @@ export const regenerateKey = async (oldKey: string) => {
  * - POST /v1/restart
  * - POST /v2/applications/:appId/restart
  */
-export const doRestart = async (appId: number, force: boolean = false) => {
+export const doRestart = async (appId: number, force = false) => {
 	await deviceState.initialized();
 
 	const currentState = await deviceState.getCurrentState();
@@ -109,27 +110,40 @@ export const doRestart = async (appId: number, force: boolean = false) => {
 	const services = app.services;
 
 	try {
-		// Set target so that services get deleted
-		app.services = [];
-		await deviceState.applyIntermediateTarget(currentState, { force });
-		// Restore services
-		app.services = services;
-		return deviceState.applyIntermediateTarget(currentState, {
-			keepVolumes: false,
-			force,
+		await deviceState.withExclusiveApply(async (abortSignal) => {
+			// Remove services
+			app.services = [];
+			deviceState.setIntermediateTarget(currentState);
+			await deviceState.applyTarget({
+				intermediate: true,
+				force,
+				abortSignal,
+			});
+
+			// Recreate services
+			app.services = services;
+			deviceState.setIntermediateTarget(currentState);
+			await deviceState.applyTarget({
+				intermediate: true,
+				keepVolumes: false,
+				force,
+				abortSignal,
+			});
 		});
 	} finally {
+		deviceState.setIntermediateTarget(null);
 		deviceState.triggerApplyTarget();
 	}
 };
 
 /**
  * Purges volumes for an application.
+ * Also purges the extra-firmware system volume.
  * Used by:
  * - POST /v1/purge
  * - POST /v2/applications/:appId/purge
  */
-export const doPurge = async (appId: number, force: boolean = false) => {
+export const doPurge = async (appId: number, force = false) => {
 	await deviceState.initialized();
 
 	logger.logSystemMessage(
@@ -149,15 +163,27 @@ export const doPurge = async (appId: number, force: boolean = false) => {
 	delete currentState.local.apps[appId];
 
 	try {
-		// Purposely tell the apply function to delete volumes so
-		// they can get deleted even in local mode
-		await deviceState.applyIntermediateTarget(currentState, {
-			keepVolumes: false,
-			force,
+		await deviceState.withExclusiveApply(async (abortSignal) => {
+			// Purposely tell the apply function to delete volumes so
+			// they can get deleted even in local mode
+			deviceState.setIntermediateTarget(currentState);
+			await deviceState.applyTarget({
+				intermediate: true,
+				keepVolumes: false,
+				force,
+				abortSignal,
+			});
+
+			// Purge the extra-firmware system volume
+			log.info('Purging extra-firmware volume');
+			await extraFirmware.remove();
+			await extraFirmware.create();
+
+			// Restore user app after purge
+			currentState.local.apps[appId] = app;
+			deviceState.setIntermediateTarget(currentState);
+			await deviceState.applyTarget({ intermediate: true, abortSignal });
 		});
-		// Restore user app after purge
-		currentState.local.apps[appId] = app;
-		await deviceState.applyIntermediateTarget(currentState);
 		logger.logSystemMessage('Purged data', { appId }, 'Purge data success');
 	} catch (err: any) {
 		logger.logSystemMessage(
@@ -167,6 +193,7 @@ export const doPurge = async (appId: number, force: boolean = false) => {
 		);
 		throw err;
 	} finally {
+		deviceState.setIntermediateTarget(null);
 		deviceState.triggerApplyTarget();
 	}
 };
@@ -218,7 +245,7 @@ const restoreVaultVolume = async (appId: number): Promise<void> => {
  * Used by:
  * - POST /v2/applications/:appId/factory-reset
  */
-export const doFactoryReset = async (appId: number, force: boolean = false) => {
+export const doFactoryReset = async (appId: number, force = false) => {
 	await deviceState.initialized();
 
 	logger.logSystemMessage(
@@ -290,9 +317,9 @@ export const getLegacyService = async (appId: number) => {
  */
 export const executeDeviceAction = async (
 	step: Parameters<typeof deviceState.executeStepAction>[0],
-	force: boolean = false,
+	force = false,
 ) => {
-	return await deviceState.executeStepAction(step, {
+	await deviceState.executeStepAction(step, {
 		force,
 	});
 };
@@ -413,14 +440,13 @@ export const executeServiceAction = async ({
  * Used by:
  * - POST /v1/update
  */
-export const updateTarget = async (
-	force: boolean = false,
-	cancel: boolean = false,
-) => {
+export const updateTarget = async (force = false, cancel = false) => {
 	eventTracker.track('Update notification');
 
 	if (force || (await config.get('instantUpdates'))) {
-		TargetState.update(force, true, cancel).catch(_.noop);
+		TargetState.update(force, true, cancel).catch(() => {
+			// ignore
+		});
 		return true;
 	}
 
@@ -579,11 +605,12 @@ const writeDhcpcdConf = async (content: string): Promise<void> => {
 		);
 	} finally {
 		await exec(`nsenter --mount=${NS_MOUNT} -- mount -o remount,ro /`).catch(
-			(e: unknown) =>
+			(e: unknown) => {
 				log.warn(
 					'Failed to remount root read-only after dhcpcd.conf write:',
 					e,
-				),
+				);
+			},
 		);
 		await fs.unlink(STAGED_DHCPCD_CONF).catch(() => undefined);
 	}
@@ -593,7 +620,9 @@ const writeDhcpcdConf = async (content: string): Promise<void> => {
 const reloadDhcpcd = async () => {
 	await exec(
 		`nsenter --mount=${NS_MOUNT} -- sh -c 'killall -HUP dhcpcd 2>/dev/null || true'`,
-	).catch((e: unknown) => log.warn('Failed to signal dhcpcd to reload:', e));
+	).catch((e: unknown) => {
+		log.warn('Failed to signal dhcpcd to reload:', e);
+	});
 };
 
 // Write the information for the the .conf into the correct format. and modify the file.

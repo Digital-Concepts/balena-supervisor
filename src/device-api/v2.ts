@@ -6,7 +6,6 @@ import * as deviceState from '../device-state';
 import * as apiBinder from '../api-binder';
 import * as applicationManager from '../compose/application-manager';
 import type { CompositionStepAction } from '../compose/composition-steps';
-import type { Service } from '../compose/service';
 import { Volume } from '../compose/volume';
 import * as commitStore from '../compose/commit';
 import * as config from '../config';
@@ -32,6 +31,7 @@ import { fromV2TargetState } from '../lib/legacy';
 import * as actions from './actions';
 import { v2ServiceEndpointError } from './messages';
 import { reprovision } from '../api-binder';
+import { setTags } from '../api-binder/tags';
 
 export const router = express.Router();
 
@@ -126,7 +126,7 @@ router.post(
 
 router.post(
 	'/v2/applications/:appId/purge',
-	(req: AuthorizedRequest, res: Response, next: NextFunction) => {
+	async (req: AuthorizedRequest, res: Response, next: NextFunction) => {
 		const appId = checkInt(req.params.appId);
 		const force = checkTruthy(req.body.force);
 		if (!appId) {
@@ -144,18 +144,18 @@ router.post(
 			});
 		}
 
-		return actions
-			.doPurge(appId, force)
-			.then(() => {
-				res.status(200).send('OK');
-			})
-			.catch(next);
+		try {
+			await actions.doPurge(appId, force);
+			res.status(200).send('OK');
+		} catch (e) {
+			next(e);
+		}
 	},
 );
 
 router.post(
 	'/v2/applications/:appId/restart',
-	(req: AuthorizedRequest, res: Response, next: NextFunction) => {
+	async (req: AuthorizedRequest, res: Response, next: NextFunction) => {
 		const appId = checkInt(req.params.appId);
 		const force = checkTruthy(req.body.force);
 		if (!appId) {
@@ -173,12 +173,13 @@ router.post(
 			});
 		}
 
-		return actions
-			.doRestart(appId, force)
-			.then(() => {
-				res.status(200).send('OK');
-			})
-			.catch(next);
+		try {
+			await actions.doRestart(appId, force);
+
+			res.status(200).send('OK');
+		} catch (e) {
+			next(e);
+		}
 	},
 );
 
@@ -186,85 +187,59 @@ router.get(
 	'/v2/applications/state',
 	async (req: AuthorizedRequest, res: Response, next: NextFunction) => {
 		try {
-			// It's very hacky to access the services and db via the application manager
-			// refactor this code to use applicationManager.getState() instead.
-			const [services, imgs, apps] = await Promise.all([
-				serviceManager.getState(),
-				images.getState(),
-				db.models('app').select(['appId', 'commit', 'name']) as Promise<
-					Array<{ appId: string; commit: string; name: string }>
+			const [apps, appsState] = await Promise.all([
+				// get the target apps from the database to augment the results returned
+				// by applicationManager.getState
+				db
+					.models('app')
+					.select(['appId', 'uuid', 'commit', 'releaseId', 'name']) as Promise<
+					Array<{
+						appId: number;
+						uuid: string;
+						releaseId: number;
+						commit: string;
+						name: string;
+					}>
 				>,
+				applicationManager.getState(),
 			]);
-			// Create an object which is keyed my application name
-			const response: {
-				[appName: string]: {
-					appId: number;
-					commit: string;
-					services: {
-						[serviceName: string]: {
-							status?: string;
-							releaseId: number;
-							downloadProgress: number | null;
-						};
-					};
-				};
-			} = {};
 
-			const appNameById: { [id: number]: string } = {};
-			const commits: string[] = [];
+			const result = apps
+				// only access scoped apps
+				.filter(({ appId: $appId }) => req.auth.isScoped({ apps: [$appId] }))
+				// re-index by app name and add relevant fields from the database
+				.map(({ appId, commit, uuid, name, releaseId }) => {
+					const updateStatus =
+						appsState[uuid]?.releases[commit]?.update_status || 'done';
+					const services = Object.fromEntries(
+						Object.entries(
+							appsState[uuid]?.releases[commit]?.services ?? {},
+						).map(
+							([svcName, { status, image, download_progress: dlProgress }]) => [
+								svcName,
+								{
+									status,
+									image,
+									downloadProgress: dlProgress ?? null,
+									releaseId: releaseId,
+								},
+							],
+						),
+					);
 
-			// only access scoped apps
-			apps
-				.filter((app) => req.auth.isScoped({ apps: [parseInt(app.appId, 10)] }))
-				.forEach((app) => {
-					const appId = parseInt(app.appId, 10);
-					response[app.name] = {
-						appId,
-						commit: app.commit,
-						services: {},
-					};
-
-					appNameById[appId] = app.name;
-					commits.push(app.commit);
+					return [
+						name,
+						{
+							appId,
+							appUuid: uuid,
+							commit,
+							updateStatus,
+							services,
+						},
+					];
 				});
 
-			// only access scoped images
-			imgs
-				.filter(
-					(img) =>
-						req.auth.isScoped({ apps: [img.appId] }) &&
-						// Ensure we are using the apps for the target release
-						commits.includes(img.commit),
-				)
-				.forEach((img) => {
-					const appName = appNameById[img.appId];
-					if (appName == null) {
-						log.warn(
-							`Image found for unknown application!\nImage: ${JSON.stringify(
-								img,
-							)}`,
-						);
-						return;
-					}
-
-					const svc = _.find(services, (s: Service) => {
-						return s.serviceName === img.serviceName && s.commit === img.commit;
-					});
-
-					let status: string | undefined;
-					if (svc == null) {
-						status = img.status;
-					} else {
-						status = svc.status || img.status;
-					}
-					response[appName].services[img.serviceName] = {
-						status,
-						releaseId: img.releaseId,
-						downloadProgress: img.downloadProgress || null,
-					};
-				});
-
-			res.status(200).json(response);
+			res.status(200).json(Object.fromEntries(result));
 		} catch (err) {
 			next(err);
 		}
@@ -352,7 +327,7 @@ router.post('/v2/local/target-state', async (req, res) => {
 
 	try {
 		await deviceState.setTarget(targetState, true);
-		await deviceState.triggerApplyTarget({ force });
+		deviceState.triggerApplyTarget({ force });
 		res.status(200).json({
 			status: 'success',
 			message: 'OK',
@@ -387,7 +362,7 @@ router.get('/v2/local/device-info', async (_req, res) => {
 	}
 });
 
-router.get('/v2/local/logs', async (_req, res) => {
+router.get('/v2/local/logs', (_req, res) => {
 	const serviceNameCache: { [sId: number]: string } = {};
 	const backend = logger.getLocalBackend();
 	// Cache the service names to IDs per call to the endpoint
@@ -427,8 +402,8 @@ router.get('/v2/containerId', async (req: AuthorizedRequest, res) => {
 	);
 
 	if (req.query.serviceName != null || req.query.service != null) {
-		const serviceName = req.query.serviceName || req.query.service;
-		const service = _.find(services, (svc) => svc.serviceName === serviceName);
+		const serviceName = req.query.serviceName ?? req.query.service;
+		const service = services.find((svc) => svc.serviceName === serviceName);
 		if (service != null) {
 			res.status(200).json({
 				status: 'success',
@@ -444,8 +419,8 @@ router.get('/v2/containerId', async (req: AuthorizedRequest, res) => {
 		res.status(200).json({
 			status: 'success',
 			services: _(services)
-				.keyBy('serviceName')
-				.mapValues('containerId')
+				.keyBy((s) => s.serviceName)
+				.mapValues((s) => s.containerId)
 				.value(),
 		});
 	}
@@ -541,6 +516,45 @@ router.get('/v2/device/tags', async (_req, res) => {
 	}
 });
 
+router.patch('/v2/device/tags', async (req, res) => {
+	try {
+		const body = req.body as unknown;
+		if (body == null || typeof body !== 'object') {
+			throw new BadRequestError(
+				'Invalid tags body, must be an object like `{[tagKey: string]: string}`',
+			);
+		}
+		for (const [key, value] of Object.entries(body)) {
+			if (typeof value !== 'string') {
+				throw new BadRequestError(
+					'Invalid tags body, must be an object like `{[tagKey: string]: string}`',
+				);
+			}
+			if (/\s/.test(key)) {
+				throw new BadRequestError('Tag keys cannot contain whitespace');
+			}
+		}
+
+		await setTags(body as Record<string, string>);
+
+		return res.status(202).json({
+			status: 'success',
+		});
+	} catch (e: any) {
+		if (e instanceof BadRequestError) {
+			res.status(e.statusCode).json({
+				status: 'failed',
+				message: e.message,
+			});
+			return;
+		}
+		res.status(500).json({
+			status: 'failed',
+			message: e.message,
+		});
+	}
+});
+
 router.get('/v2/device/vpn', async (_req, res) => {
 	const conf = await deviceState.getCurrentConfig();
 	// Build VPNInfo
@@ -590,7 +604,7 @@ router.post('/v2/dc/vpn', async (req, res) => {
 
 		// 2. Trigger immediate reconciliation. getVPNSteps will read the lock
 		//    file and emit a setVPNEnabled step if the live service disagrees.
-		await deviceState.triggerApplyTarget({ force: true });
+		deviceState.triggerApplyTarget({ force: true });
 
 		// 3. Reflect to cloud so the dashboard reports the truth. Best-effort:
 		//    if the cloud is unreachable the local state still wins on next sync.
@@ -642,9 +656,9 @@ router.get('/v2/cleanup-volumes', async (req: AuthorizedRequest, res) => {
 router.post('/v2/journal-logs', (req, res) => {
 	const all = checkTruthy(req.body.all);
 	const follow = checkTruthy(req.body.follow);
-	const count = checkInt(req.body.count, { positive: true }) || undefined;
+	const count = checkInt(req.body.count, { positive: true }) ?? undefined;
 	const unit = req.body.unit;
-	const format = req.body.format || 'short';
+	const format = req.body.format ?? 'short';
 	const containerId = req.body.containerId;
 	const since = req.body.since;
 	const until = req.body.until;
@@ -716,7 +730,7 @@ router.post('/v2/network/eth0/static-ip', async (req, res, next) => {
 	}
 
 	try {
-		await actions.doSetEth0StaticIp(ip, routers || undefined, dns || undefined);
+		await actions.doSetEth0StaticIp(ip, routers ?? undefined, dns ?? undefined);
 		return res.status(200).json({
 			status: 'success',
 			message: 'Static IP configuration applied to eth0',

@@ -2,6 +2,7 @@ import * as apiBinder from './api-binder';
 import * as db from './db';
 import * as config from './config';
 import * as deviceState from './device-state';
+import * as tags from './api-binder/tags';
 import * as logger from './logging';
 import SupervisorAPI from './device-api';
 import * as v1 from './device-api/v1';
@@ -15,6 +16,8 @@ import log from './lib/supervisor-console';
 import version from './lib/supervisor-version';
 
 import * as firewall from './lib/firewall';
+import * as constants from './lib/constants';
+import * as uname from './lib/uname';
 
 const startupConfigFields: config.ConfigKey[] = [
 	'uuid',
@@ -42,11 +45,20 @@ export class Supervisor {
 
 		const conf = await config.getMany(startupConfigFields);
 
+		// These could fail, but if so, the device has much bigger problems
+		const [unameR, unameS] = await Promise.all([
+			uname.get('-r'),
+			uname.get('-s'),
+		]);
 		initializeContractRequirements({
 			supervisorVersion: version,
 			deviceType: await config.get('deviceType'),
 			deviceArch: await config.get('deviceArch'),
-			l4tVersion: await osRelease.getL4tVersion(),
+			kernelVersion: uname.parseKernelVersion(unameR),
+			kernelSlug: uname.parseKernelSlug(unameS),
+			osVersion: await osRelease.getOSSemver(constants.hostOSVersionPath),
+			osSlug: await osRelease.getOSSlug(constants.hostOSVersionPath),
+			l4tVersion: uname.parseL4tVersion(unameR),
 		});
 
 		log.info('Starting firewall');
@@ -56,6 +68,7 @@ export class Supervisor {
 		await apiBinder.initialized();
 
 		await deviceState.initialized();
+		await tags.initialized();
 
 		const unmanaged = await config.get('unmanaged');
 		logger.logSystemMessage('Supervisor starting', {}, 'Supervisor start');

@@ -7,11 +7,13 @@ import { readFile } from 'fs/promises';
 import { DeviceState } from '../types';
 import * as config from '../config';
 import type { SchemaTypeKey, SchemaReturn } from '../config/schema-type';
-import * as eventTracker from '../event-tracker';
 import * as deviceState from '../device-state';
 
-import type { OnFailureInfo } from '../lib/backoff';
-import { withBackoff } from '../lib/backoff';
+import {
+	createHandleRetry,
+	withBackoff,
+	type OnFailureInfo,
+} from '../lib/backoff';
 import { log } from '../lib/supervisor-console';
 import { InternalInconsistencyError, StatusError } from '../lib/errors';
 import { getRequestInstance } from '../lib/request';
@@ -19,11 +21,12 @@ import { shallowDiff, prune, empty } from '../lib/json';
 import { pathOnRoot } from '../lib/host-utils';
 import { touch, writeAndSyncFile } from '../lib/fs-utils';
 import { reprovision } from '../api-binder';
+import pTimeout from 'p-timeout';
 
 let lastReport: DeviceState = {};
-let lastReportTime: number = -Infinity;
+let lastReportTime = -Infinity;
 // Tracks if unable to report the latest state change event.
-let stateChangeDeferred: boolean = false;
+let stateChangeDeferred = false;
 // How often can we report our state to the server in ms
 const maxReportFrequency = 10 * 1000;
 // How often can we report metrics to the server in ms; mirrors server setting.
@@ -31,13 +34,6 @@ const maxReportFrequency = 10 * 1000;
 const maxMetricsFrequency = 300 * 1000;
 // Path of the cache for last reported state
 const CACHE_PATH = pathOnRoot('/tmp/balena-supervisor/state-report-cache');
-
-// TODO: This counter is read by the healthcheck to see if the
-// supervisor is having issues to connect. We have removed the
-// lines of code to increase the counter on network error as
-// we suspect that is really making things worst. This will
-// most likely get removed in the future.
-export let stateReportErrors = 0;
 
 type StateReportOpts = {
 	[key in keyof Pick<
@@ -71,9 +67,10 @@ async function report({ body, opts }: StateReport) {
 		body,
 	};
 
-	const [{ statusCode, body: statusMessage, headers }] = await request
-		.patchAsync(endpoint, params)
-		.timeout(apiRequestTimeout);
+	const [{ statusCode, body: statusMessage, headers }] = await pTimeout(
+		request.patch(endpoint, params),
+		{ milliseconds: apiRequestTimeout },
+	);
 
 	if (statusCode < 200 || statusCode >= 300) {
 		throw new StatusError(
@@ -136,7 +133,6 @@ async function reportCurrentState(opts: StateReportOpts, uuid: string) {
 	// Run in try block to avoid throwing any exceptions
 	try {
 		await reportWithBackoff();
-		stateReportErrors = 0;
 	} catch (e) {
 		log.error(e);
 	}
@@ -179,6 +175,10 @@ async function getCache(): Promise<DeviceState> {
 	}
 }
 
+// DC vendor extension: when a state report fails with HTTP 401 the device
+// API key is presumed revoked/stale. Trigger an auto-reprovision so the
+// fleet self-heals without operator intervention. All other failure paths
+// delegate to upstream's shared createHandleRetry for consistent logging.
 async function handle401Error(error: StatusError) {
 	log.error(
 		`Unauthorized access! Status code: ${error.statusCode} - message:`,
@@ -191,26 +191,16 @@ async function handle401Error(error: StatusError) {
 	}
 }
 
+const upstreamHandleRetry = createHandleRetry('Device state');
+
 function handleRetry(retryInfo: OnFailureInfo) {
-	if (retryInfo.error instanceof StatusError) {
-		if (retryInfo.error.statusCode === 401) {
-			// Fire and forget the 401 handler
-			void handle401Error(retryInfo.error);
-		} else {
-			// Handle other StatusError cases
-			log.error(
-				`Device state report failure! Status code: ${retryInfo.error.statusCode} - message:`,
-				retryInfo.error?.message ?? retryInfo.error,
-			);
-		}
-	} else {
-		eventTracker.track('Device state report failure', {
-			error: retryInfo.error,
-		});
+	if (
+		retryInfo.error instanceof StatusError &&
+		retryInfo.error.statusCode === 401
+	) {
+		void handle401Error(retryInfo.error);
 	}
-	log.info(
-		`Retrying current state report in ${retryInfo.delay / 1000} seconds`,
-	);
+	upstreamHandleRetry(retryInfo);
 }
 
 /**

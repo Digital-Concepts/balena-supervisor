@@ -43,6 +43,13 @@ const CONTAINER_NETWORK_MODE_REGEX = /container:\s*(.+)/;
 
 const unsupportedSecurityOpt = (opt: string) => /label=.*/.test(opt);
 
+// Type for the return value of deep-object-diff's detailedDiff function
+interface DetailedDiff<T = any> {
+	added: Partial<T>;
+	deleted: Partial<T>;
+	updated: Partial<T>;
+}
+
 export type Service = ServiceIface;
 
 class ServiceImpl implements Service {
@@ -110,7 +117,7 @@ class ServiceImpl implements Service {
 
 		appConfig = {
 			...appConfig,
-			composition: ComposeUtils.camelCaseConfig(appConfig.composition || {}),
+			composition: ComposeUtils.camelCaseConfig(appConfig.composition ?? {}),
 		};
 
 		if (!appConfig.appId) {
@@ -134,7 +141,7 @@ class ServiceImpl implements Service {
 
 		// dependsOn is used by other parts of the step
 		// calculation so we delete it from the composition
-		service.dependsOn = appConfig.composition?.dependsOn || null;
+		service.dependsOn = appConfig.composition?.dependsOn ?? null;
 		delete appConfig.composition?.dependsOn;
 
 		// Get remaining fields from appConfig
@@ -159,7 +166,7 @@ class ServiceImpl implements Service {
 		// First process the networks correctly
 		let networks: ServiceConfig['networks'] = {};
 		if (Array.isArray(config.networks)) {
-			_.each(config.networks, (name) => {
+			_.forEach(config.networks, (name) => {
 				networks[name] = {};
 			});
 		} else if (_.isObject(config.networks)) {
@@ -169,9 +176,7 @@ class ServiceImpl implements Service {
 		networks = _.mapKeys(networks, (_v, k) => `${service.appUuid}_${k}`);
 		// Ensure that we add an alias of the service name
 		networks = _.mapValues(networks, (v) => {
-			if (v.aliases == null) {
-				v.aliases = [];
-			}
+			v.aliases ??= [];
 			const serviceName: string = service.serviceName || '';
 			if (!_.includes(v.aliases, serviceName)) {
 				v.aliases.push(serviceName);
@@ -200,7 +205,7 @@ class ServiceImpl implements Service {
 
 		// ulimits
 		const ulimits: ServiceConfig['ulimits'] = {};
-		_.each(config.ulimits, (limit, name) => {
+		_.forEach(config.ulimits, (limit, name) => {
 			if (typeof limit === 'number') {
 				ulimits[name] = { soft: limit, hard: limit };
 				return;
@@ -226,9 +231,7 @@ class ServiceImpl implements Service {
 				// We need to add a depends on here to ensure that
 				// the needed container has started up by the time
 				// we try to start this service
-				if (service.dependsOn == null) {
-					service.dependsOn = [];
-				}
+				service.dependsOn ??= [];
 				service.dependsOn.push(match[1]);
 				serviceNetworkMode = true;
 			} else if (CONTAINER_NETWORK_MODE_REGEX.test(config.networkMode)) {
@@ -240,7 +243,7 @@ class ServiceImpl implements Service {
 		} else {
 			// Assign network_mode to a default value if necessary
 			if (!_.isEmpty(networks)) {
-				config.networkMode = _.keys(networks)[0];
+				config.networkMode = Object.keys(networks)[0];
 			} else {
 				config.networkMode = 'default';
 			}
@@ -267,20 +270,20 @@ class ServiceImpl implements Service {
 		// commit a container which has been run on a balena device)
 		config.environment = Service.omitDeviceNameVars(
 			Service.extendEnvVars(
-				config.environment || {},
+				config.environment ?? {},
 				options,
-				service.appId || 0,
+				service.appId ?? 0,
 				service.appUuid!,
-				service.serviceName || '',
+				service.serviceName ?? '',
 			),
 		);
 		config.labels = ComposeUtils.normalizeLabels(
 			Service.extendLabels(
-				config.labels || {},
+				config.labels ?? {},
 				options,
-				service.appId || 0,
-				service.serviceId || 0,
-				service.serviceName || '',
+				service.appId ?? 0,
+				service.serviceId ?? 0,
+				service.serviceName ?? '',
 				service.appUuid!, // appUuid will always exist on the target state
 			),
 		);
@@ -345,20 +348,20 @@ class ServiceImpl implements Service {
 		}
 
 		if (Array.isArray(config.sysctls)) {
-			config.sysctls = _.fromPairs(
+			config.sysctls = Object.fromEntries(
 				_.map(config.sysctls, (v) => _.split(v, '=')),
 			);
 		}
 		config.sysctls = _.mapValues(config.sysctls, String);
 
-		_.each(['cpuShares', 'cpuQuota', 'oomScoreAdj'], (key) => {
+		for (const key of ['cpuShares', 'cpuQuota', 'oomScoreAdj']) {
 			const numVal = checkInt(config[key]);
 			if (numVal) {
 				config[key] = numVal;
 			} else {
 				delete config[key];
 			}
-		});
+		}
 
 		if (config.cpus != null) {
 			config.cpus = Math.round(Number(config.cpus) * 10 ** 9);
@@ -404,7 +407,7 @@ class ServiceImpl implements Service {
 			devices,
 			deviceRequests: [],
 			dnsOpt: [],
-			entrypoint: '',
+			entrypoint: [],
 			extraHosts: [],
 			networks,
 			dns: [],
@@ -489,7 +492,7 @@ class ServiceImpl implements Service {
 		}
 
 		let networks: ServiceConfig['networks'] = {};
-		if (_.get(container, 'NetworkSettings.Networks', null) != null) {
+		if (container?.NetworkSettings?.Networks != null) {
 			networks = ComposeUtils.dockerNetworkToServiceNetwork(
 				container.NetworkSettings.Networks,
 				svc.containerId,
@@ -497,7 +500,7 @@ class ServiceImpl implements Service {
 		}
 
 		const ulimits: ServiceConfig['ulimits'] = {};
-		_.each(container.HostConfig.Ulimits, ({ Name, Soft, Hard }) => {
+		_.forEach(container.HostConfig.Ulimits, ({ Name, Soft, Hard }) => {
 			// The Ulimit type in @types/dockerode allows any element to be
 			// null which is probably wrong
 			if (Name != null && Soft != null && Hard != null) {
@@ -509,16 +512,16 @@ class ServiceImpl implements Service {
 		});
 
 		const portMaps = PortMap.fromDockerOpts(container.HostConfig.PortBindings);
-		const tmpfs: string[] = Object.keys(container.HostConfig?.Tmpfs || {});
+		const tmpfs: string[] = Object.keys(container.HostConfig?.Tmpfs ?? {});
 
 		const binds: string[] = _.uniq(
 			([] as string[]).concat(
-				container.HostConfig.Binds || [],
-				Object.keys(container.Config?.Volumes || {}),
+				container.HostConfig.Binds ?? [],
+				Object.keys(container.Config?.Volumes ?? {}),
 			),
 		);
 
-		const mounts: LongDefinition[] = (container.HostConfig?.Mounts || []).map(
+		const mounts: LongDefinition[] = (container.HostConfig?.Mounts ?? []).map(
 			ComposeUtils.dockerMountToServiceMount,
 		);
 
@@ -526,10 +529,7 @@ class ServiceImpl implements Service {
 
 		// We cannot use || for this value, as the empty string is a
 		// valid restart policy but will equate to null in an OR
-		let restart = _.get(container.HostConfig.RestartPolicy, 'Name');
-		if (restart == null) {
-			restart = 'always';
-		}
+		const restart = container.HostConfig.RestartPolicy?.Name ?? 'always';
 
 		// Define the service config with the same defaults that are used
 		// when creating from a compose object, so comparisons will work
@@ -546,51 +546,52 @@ class ServiceImpl implements Service {
 
 			portMaps,
 			hostname,
-			command: container.Config.Cmd || '',
-			entrypoint: container.Config.Entrypoint || '',
+			command: container.Config.Cmd ?? '',
+			entrypoint: container.Config.Entrypoint ?? [],
 			volumes,
 			image: container.Config.Image,
 			environment: Service.omitDeviceNameVars(
-				conversions.envArrayToObject(container.Config.Env || []),
+				conversions.envArrayToObject(container.Config.Env),
 			),
-			privileged: container.HostConfig.Privileged || false,
-			labels: ComposeUtils.normalizeLabels(container.Config.Labels || {}),
+			privileged: container.HostConfig.Privileged ?? false,
+			labels: ComposeUtils.normalizeLabels(container.Config.Labels ?? {}),
 			running: container.State.Running,
 			restart,
-			capAdd: container.HostConfig.CapAdd || [],
-			capDrop: container.HostConfig.CapDrop || [],
-			devices: container.HostConfig.Devices || [],
-			deviceRequests: container.HostConfig.DeviceRequests || [],
+			capAdd: container.HostConfig.CapAdd ?? [],
+			capDrop: container.HostConfig.CapDrop ?? [],
+			devices: container.HostConfig.Devices ?? [],
+			deviceRequests: container.HostConfig.DeviceRequests ?? [],
 			networks,
-			memLimit: container.HostConfig.Memory || 0,
-			memReservation: container.HostConfig.MemoryReservation || 0,
-			shmSize: container.HostConfig.ShmSize || 0,
-			cpuShares: container.HostConfig.CpuShares || 0,
-			cpuQuota: container.HostConfig.CpuQuota || 0,
+			memLimit: container.HostConfig.Memory ?? 0,
+			memReservation: container.HostConfig.MemoryReservation ?? 0,
+			shmSize: container.HostConfig.ShmSize ?? 0,
+			cpuShares: container.HostConfig.CpuShares ?? 0,
+			cpuQuota: container.HostConfig.CpuQuota ?? 0,
 			// Not present on a container inspect
 			cpus: 0,
-			cpuset: container.HostConfig.CpusetCpus || '',
-			domainname: container.Config.Domainname || '',
-			oomKillDisable: container.HostConfig.OomKillDisable || false,
-			oomScoreAdj: container.HostConfig.OomScoreAdj || 0,
-			dns: container.HostConfig.Dns || [],
-			dnsSearch: container.HostConfig.DnsSearch || [],
-			dnsOpt: container.HostConfig.DnsOptions || [],
+			cpuset: container.HostConfig.CpusetCpus ?? '',
+			domainname: container.Config.Domainname ?? '',
+			oomKillDisable: container.HostConfig.OomKillDisable ?? false,
+			oomScoreAdj: container.HostConfig.OomScoreAdj ?? 0,
+			dns: container.HostConfig.Dns ?? [],
+			dnsSearch: container.HostConfig.DnsSearch ?? [],
+			dnsOpt: container.HostConfig.DnsOptions ?? [],
 			tmpfs,
-			extraHosts: container.HostConfig.ExtraHosts || [],
+			extraHosts: container.HostConfig.ExtraHosts ?? [],
 			ulimits,
-			stopSignal: (container.Config as any).StopSignal || 'SIGTERM',
+			stopSignal: (container.Config as any).StopSignal ?? 'SIGTERM',
+			// eslint-disable-next-line @typescript-eslint/prefer-nullish-coalescing
 			stopGracePeriod: (container.Config as any).StopTimeout || 10,
 			healthcheck: ComposeUtils.dockerHealthcheckToServiceHealthcheck(
-				(container.Config as any).Healthcheck || {},
+				(container.Config as any).Healthcheck ?? {},
 			),
-			readOnly: container.HostConfig.ReadonlyRootfs || false,
-			sysctls: container.HostConfig.Sysctls || {},
-			cgroupParent: container.HostConfig.CgroupParent || '',
-			groupAdd: container.HostConfig.GroupAdd || [],
-			pid: container.HostConfig.PidMode || '',
-			pidsLimit: container.HostConfig.PidsLimit || 0,
-			securityOpt: (container.HostConfig.SecurityOpt || []).filter(
+			readOnly: container.HostConfig.ReadonlyRootfs ?? false,
+			sysctls: container.HostConfig.Sysctls ?? {},
+			cgroupParent: container.HostConfig.CgroupParent ?? '',
+			groupAdd: container.HostConfig.GroupAdd ?? [],
+			pid: container.HostConfig.PidMode ?? '',
+			pidsLimit: container.HostConfig.PidsLimit ?? 0,
+			securityOpt: (container.HostConfig.SecurityOpt ?? []).filter(
 				// The docker engine v20+ adds selinux security options depending
 				// on the container configuration. Ignore those in the target state
 				// comparison as selinux is not supported by balenaOS so those options
@@ -598,12 +599,12 @@ class ServiceImpl implements Service {
 				// https://github.com/moby/moby/blob/master/daemon/create.go#L214
 				(opt: string) => !unsupportedSecurityOpt(opt),
 			),
-			usernsMode: container.HostConfig.UsernsMode || '',
-			ipc: container.HostConfig.IpcMode || '',
-			macAddress: (container.Config as any).MacAddress || '',
-			user: container.Config.User || '',
-			workingDir: container.Config.WorkingDir || '',
-			tty: container.Config.Tty || false,
+			usernsMode: container.HostConfig.UsernsMode ?? '',
+			ipc: container.HostConfig.IpcMode ?? '',
+			macAddress: (container.Config as any).MacAddress ?? '',
+			user: container.Config.User ?? '',
+			workingDir: container.Config.WorkingDir ?? '',
+			tty: container.Config.Tty ?? false,
 		};
 
 		// Only add `init` if true or false, otherwise leave blank
@@ -767,7 +768,7 @@ class ServiceImpl implements Service {
 	): boolean {
 		// Check all of the networks for any changes
 		let sameNetworks = true;
-		_.each(service.config.networks, (network, name) => {
+		_.forEach(service.config.networks, (network, name) => {
 			if (this.config.networks[name] == null) {
 				sameNetworks = false;
 				return;
@@ -817,13 +818,22 @@ class ServiceImpl implements Service {
 			);
 			if (!nonArrayEquals) {
 				// Try not to leak any sensitive information
-				const diffObj = diff(thisOmitted, otherOmitted) as ServiceConfig;
-				if (diffObj.environment != null) {
-					diffObj.environment = _.mapValues(
-						diffObj.environment,
-						() => 'hidden',
-					);
-				}
+				const diffObj = diff(
+					thisOmitted,
+					otherOmitted,
+				) as DetailedDiff<ServiceConfig>;
+
+				// Redact environment variables from all sections (added, deleted, updated)
+				const redactEnvironment = (obj: Partial<ServiceConfig> | undefined) => {
+					if (obj?.environment != null) {
+						obj.environment = _.mapValues(obj.environment, () => 'hidden');
+					}
+				};
+
+				redactEnvironment(diffObj.added);
+				redactEnvironment(diffObj.deleted);
+				redactEnvironment(diffObj.updated);
+
 				log.debug('  Non-array fields: ', JSON.stringify(diffObj));
 			}
 			if (differentArrayFields.length > 0) {
@@ -946,7 +956,7 @@ class ServiceImpl implements Service {
 		const exposed: DockerPortOptions['exposedPorts'] = {};
 		const ports: DockerPortOptions['portBindings'] = {};
 
-		_.each(this.config.portMaps, (pmap) => {
+		for (const pmap of this.config.portMaps) {
 			const { exposedPorts, portBindings } = pmap.toDockerOpts();
 			_.merge(exposed, exposedPorts);
 			_.mergeWith(ports, portBindings, (destVal, srcVal) => {
@@ -955,7 +965,7 @@ class ServiceImpl implements Service {
 				}
 				return destVal.concat(srcVal);
 			});
-		});
+		}
 
 		return { exposedPorts: exposed, portBindings: ports };
 	}
@@ -994,7 +1004,7 @@ class ServiceImpl implements Service {
 		defaultEnv['USER'] = 'root';
 
 		let env = _.defaults(environment, defaultEnv);
-		const imageInfoEnv = _.get(options.imageInfo, 'Config.Env', []);
+		const imageInfoEnv = options.imageInfo?.Config?.Env;
 		env = _.defaults(env, conversions.envArrayToObject(imageInfoEnv));
 		return env;
 	}
@@ -1102,7 +1112,7 @@ class ServiceImpl implements Service {
 			},
 		};
 
-		const imageLabels = _.get(imageInfo, 'Config.Labels', {});
+		const imageLabels = imageInfo?.Config?.Labels ?? {};
 		newLabels = _.defaults(newLabels, imageLabels);
 		return newLabels;
 	}
@@ -1119,7 +1129,7 @@ class ServiceImpl implements Service {
 		const namespaceVolume = (volumeSource: string) =>
 			`${appId}_${volumeSource.trim()}`;
 
-		for (const volume of composeVolumes || []) {
+		for (const volume of composeVolumes ?? []) {
 			const isString = typeof volume === 'string';
 			// Bind mounts are not allowed
 			if (LongBind.is(volume) || ShortBind.is(volume)) {
@@ -1155,7 +1165,7 @@ class ServiceImpl implements Service {
 
 		// Now add the default and image binds
 		volumes = volumes.concat(Service.defaultBinds(appId, serviceName));
-		volumes = _.union(_.keys(_.get(imageInfo, 'Config.Volumes')), volumes);
+		volumes = _.union(_.keys(imageInfo?.Config?.Volumes), volumes);
 
 		return volumes;
 	}

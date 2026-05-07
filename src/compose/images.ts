@@ -33,7 +33,7 @@ interface FetchProgressEvent {
 
 // Setup an event emitter
 interface ImageEvents {
-	change: void;
+	change: never;
 }
 class ImageEventEmitter extends (EventEmitter as new () => StrictEventEmitter<
 	EventEmitter,
@@ -153,11 +153,11 @@ export function imageFromService(service: ServiceInfo): Image {
 		name: service.imageName!,
 		appId: service.appId,
 		appUuid: service.appUuid!,
-		serviceId: service.serviceId!,
-		serviceName: service.serviceName!,
-		imageId: service.imageId!,
-		releaseId: service.releaseId!,
-		commit: service.commit!,
+		serviceId: service.serviceId,
+		serviceName: service.serviceName,
+		imageId: service.imageId,
+		releaseId: service.releaseId,
+		commit: service.commit,
 	};
 }
 
@@ -196,13 +196,16 @@ export async function triggerFetch(
 		});
 	};
 
-	// Remove image task on fetch abort to prevent noop loop
-	abortSignal.onabort = () => {
+	// Remove image task on fetch abort to prevent noop loop.
+	// Use addEventListener with a named handler so we can remove it later
+	// to prevent memory leaks from closures capturing the image object.
+	const onAbort = () => {
 		reportEvent('finish', {
 			...image,
 			status: 'Downloading',
 		});
 	};
+	abortSignal.addEventListener('abort', onAbort, { once: true });
 
 	let success: boolean;
 	try {
@@ -273,6 +276,11 @@ export async function triggerFetch(
 			}
 			success = false;
 		}
+	} finally {
+		// Clean up the abort listener to prevent memory leaks.
+		// The closure captures `image` which holds references to Service data,
+		// so we must remove it to allow garbage collection.
+		abortSignal.removeEventListener('abort', onAbort);
 	}
 
 	reportEvent('finish', { ...image, status: 'Downloaded' });
@@ -301,24 +309,23 @@ export async function removeByDockerId(id: string): Promise<void> {
 }
 
 export function getNormalisedTags(image: Docker.ImageInfo): string[] {
-	return (image.RepoTags || []).map(normalise);
+	return (image.RepoTags ?? []).map(normalise);
 }
 
 async function withImagesFromDockerAndDB<T>(
 	cb: (dockerImages: Docker.ImageInfo[], composeImages: Image[]) => T,
 ) {
-	const [normalisedImages, dbImages] = await Promise.all([
-		docker.listImages({ digests: true }).then(async (images) => {
-			return await Promise.all(
-				images.map((image) => ({
-					...image,
-					RepoTag: getNormalisedTags(image),
-				})),
-			);
-		}),
+	const [images, dbImages] = await Promise.all([
+		docker.listImages({ digests: true }),
 		db.models('image').select(),
 	]);
-	return cb(normalisedImages, dbImages);
+	return cb(
+		images.map((image) => ({
+			...image,
+			RepoTag: getNormalisedTags(image),
+		})),
+		dbImages,
+	);
 }
 
 function addImageFailure(imageName: string, time = process.hrtime()) {
@@ -345,8 +352,7 @@ function isAvailableInDocker(
 	image: Image,
 	dockerImages: Docker.ImageInfo[],
 ): boolean {
-	return _.some(
-		dockerImages,
+	return dockerImages.some(
 		(dockerImage) =>
 			matchesTagOrDigest(image, dockerImage) ||
 			image.dockerImageId === dockerImage.Id,
@@ -355,7 +361,7 @@ function isAvailableInDocker(
 
 export async function getAvailable(): Promise<Image[]> {
 	return withImagesFromDockerAndDB((dockerImages, supervisedImages) =>
-		_.filter(supervisedImages, (image) =>
+		supervisedImages.filter((image) =>
 			isAvailableInDocker(image, dockerImages),
 		),
 	);
@@ -374,12 +380,9 @@ export async function cleanImageData(): Promise<void> {
 				// If the supervisor was interrupted between fetching an image and storing its id,
 				// some entries in the db might need to have the dockerImageId populated
 				if (supervisedImage.dockerImageId == null) {
-					const id = _.get(
-						_.find(dockerImages, (dockerImage) =>
-							matchesTagOrDigest(supervisedImage, dockerImage),
-						),
-						'Id',
-					);
+					const id = dockerImages.find((dockerImage) =>
+						matchesTagOrDigest(supervisedImage, dockerImage),
+					)?.Id;
 
 					if (id != null) {
 						await db
@@ -394,16 +397,20 @@ export async function cleanImageData(): Promise<void> {
 			// If the supervisor was interrupted between fetching the image and adding
 			// the tag, the engine image may have been left without the proper tag leading
 			// to issues with removal. Add tag just in case
-			await Promise.all(
-				supervisedImages
-					.filter((image) => isAvailableInDocker(image, dockerImages))
-					.map((image) => tagImage(image.dockerImageId!, image.name)),
-			).catch(() => []); // Ignore errors
+			try {
+				await Promise.all(
+					supervisedImages
+						.filter((image) => isAvailableInDocker(image, dockerImages))
+						.map((image) => tagImage(image.dockerImageId!, image.name)),
+				);
+			} catch {
+				// Ignore errors
+			}
 
 			// If the image is in the DB but not available in docker, return it
 			// for removal on the database
-			return _.reject(supervisedImages, (image) =>
-				isAvailableInDocker(image, dockerImages),
+			return supervisedImages.filter(
+				(image) => !isAvailableInDocker(image, dockerImages),
 			);
 		},
 	);
@@ -453,7 +460,7 @@ export const save = async (image: Image): Promise<void> => {
 	// Ensure image is tagged
 	await tagImage(img.Id, image.name);
 
-	image = _.clone(image);
+	image = { ...image };
 	image.dockerImageId = img.Id;
 	await markAsSupervised(image);
 };
@@ -465,7 +472,7 @@ const getSupervisorRepos = (imageName: string) => {
 	// If we're on the new balena/ARCH-supervisor image, add legacy image.
 	// If the image name is legacy, the `replace` will have no effect.
 	supervisorRepos.add(imageName.replace(/^balena/, 'resin'));
-	return [...supervisorRepos];
+	return supervisorRepos.values().toArray();
 };
 
 // TODO: same as above, we no longer use tags to identify supervisors
@@ -489,10 +496,9 @@ async function getImagesForCleanup(): Promise<Array<Docker.ImageInfo['Id']>> {
 	);
 	const svRepos = getSupervisorRepos(svImage);
 
-	const usedImageIds: string[] = await db
-		.models('image')
-		.select('dockerImageId')
-		.then((vals) => vals.map(({ dockerImageId }: Image) => dockerImageId));
+	const usedImageIds = (
+		(await db.models('image').select('dockerImageId')) as Image[]
+	).map(({ dockerImageId }) => dockerImageId);
 
 	const dockerImages = await docker.listImages({ digests: true });
 
@@ -505,19 +511,22 @@ async function getImagesForCleanup(): Promise<Array<Docker.ImageInfo['Id']>> {
 		}
 
 		// We also remove images from the Supervisor repository with a different tag
-		for (const repoTag of image.RepoTags || []) {
+		for (const repoTag of image.RepoTags ?? []) {
 			if (isSupervisorRepoTag({ repoTag, svRepos, svTag })) {
 				imagesToCleanup.add(image.Id);
 			}
 		}
 	}
 
-	return [...imagesToCleanup].filter(
-		(image) =>
-			imageCleanupFailures[image] == null ||
-			Date.now() - imageCleanupFailures[image] >
-				constants.imageCleanupErrorIgnoreTimeout,
-	);
+	return imagesToCleanup
+		.values()
+		.filter(
+			(image) =>
+				imageCleanupFailures[image] == null ||
+				Date.now() - imageCleanupFailures[image] >
+					constants.imageCleanupErrorIgnoreTimeout,
+		)
+		.toArray();
 }
 
 export const isCleanupNeeded = async () =>
@@ -536,21 +545,14 @@ const inspectByReference = async (imageName: string) => {
 	const repo = [registry, name].filter((s) => !!s).join('/');
 	const reference = [repo, tagName].filter((s) => !!s).join(':');
 
-	return await docker
-		.listImages({
-			digests: true,
-			filters: { reference: [reference] },
-		})
-		.then(([img]) =>
-			img
-				? docker.getImage(img.Id).inspect()
-				: Promise.reject(
-						new StatusError(
-							404,
-							`Failed to find an image matching ${imageName}`,
-						),
-					),
-		);
+	const [img] = await docker.listImages({
+		digests: true,
+		filters: { reference: [reference] },
+	});
+	if (img) {
+		return await docker.getImage(img.Id).inspect();
+	}
+	throw new StatusError(404, `Failed to find an image matching ${imageName}`);
 };
 
 // Get image by the full image URI. This will only work for regular pulls
@@ -564,24 +566,20 @@ const inspectByURI = async (imageName: string) =>
 // image data is there.
 const inspectByDigest = async (imageName: string) => {
 	const { digest } = dockerUtils.getRegistryAndName(imageName);
-	return await db
+	const images: Image[] = await db
 		.models('image')
 		.where('name', 'like', `%${digest}`)
 		.orWhere({ name: imageName }) // Default to looking for the full image name
-		.select()
-		.then((images) => images.filter((img: Image) => img.dockerImageId !== null))
-		// Assume that all db entries will point to the same dockerImageId, so use
-		// the first one. If this assumption is false, there is a bug with cleanup
-		.then(([img]) =>
-			img
-				? docker.getImage(img.dockerImageId).inspect()
-				: Promise.reject(
-						new StatusError(
-							404,
-							`Failed to find an image matching ${imageName}`,
-						),
-					),
-		);
+		.select();
+
+	for (const img of images) {
+		if (img.dockerImageId != null) {
+			// Assume that all db entries will point to the same dockerImageId, so use
+			// the first one. If this assumption is false, there is a bug with cleanup
+			return await docker.getImage(img.dockerImageId).inspect();
+		}
+	}
+	throw new StatusError(404, `Failed to find an image matching ${imageName}`);
 };
 
 export async function inspectByName(imageName: string) {
@@ -655,7 +653,7 @@ async function removeImageIfNotNeeded(image: Image): Promise<void> {
 
 	// We first fetch the image from the DB to ensure it exists,
 	// and get the dockerImageId and any other missing fields
-	const images = await db.models('image').select().where(image);
+	const images: Image[] = await db.models('image').select().where(image);
 
 	if (images.length === 0) {
 		removed = false;
@@ -677,7 +675,7 @@ async function removeImageIfNotNeeded(image: Image): Promise<void> {
 				digests: true,
 				filters: { reference: [reference] },
 			})
-		).flatMap((imgInfo) => imgInfo.RepoTags || []);
+		).flatMap((imgInfo) => imgInfo.RepoTags ?? []);
 
 		reportEvent('start', { ...image, status: 'Deleting' });
 		logger.logSystemEvent(LogTypes.deleteImage, { image });
@@ -703,7 +701,7 @@ async function removeImageIfNotNeeded(image: Image): Promise<void> {
 				digests: true,
 				filters: { reference: [reference] },
 			})
-		).flatMap((imgInfo) => imgInfo.RepoDigests || []);
+		).flatMap((imgInfo) => imgInfo.RepoDigests ?? []);
 
 		// Remove all remaining digests
 		for (const digest of digests) {

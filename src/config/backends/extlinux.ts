@@ -36,15 +36,12 @@ export class Extlinux extends ConfigBackend {
 	);
 
 	public static bootConfigVarRegex = new RegExp(
-		'(?:' + _.escapeRegExp(Extlinux.bootConfigVarPrefix) + ')(.+)',
+		'(?:' + RegExp.escape(Extlinux.bootConfigVarPrefix) + ')(.+)',
 	);
 
-	public async matches(
-		deviceType: string,
-		metaRelease: string | undefined,
-	): Promise<boolean> {
+	public matches(deviceType: string, metaRelease: string | undefined): boolean {
+		// Only test metaRelease with Jetson devices
 		return (
-			// Only test metaRelease with Jetson devices
 			deviceType.startsWith('jetson-') &&
 			typeof metaRelease === 'string' &&
 			semver.lt(metaRelease, EXTLINUX_READONLY)
@@ -136,7 +133,7 @@ export class Extlinux extends ConfigBackend {
 		);
 
 		// Write new extlinux configuration
-		return await hostUtils.writeToBoot(
+		await hostUtils.writeToBoot(
 			Extlinux.bootConfigPath,
 			Extlinux.extlinuxFileToString(parsedBootFile),
 		);
@@ -211,12 +208,12 @@ export class Extlinux extends ConfigBackend {
 
 	private static extlinuxFileToString(file: ExtlinuxFile): string {
 		let ret = '';
-		_.each(file.globals, (value, directive) => {
+		_.forEach(file.globals, (value, directive) => {
 			ret += `${directive} ${value}\n`;
 		});
-		_.each(file.labels, (directives, key) => {
+		_.forEach(file.labels, (directives, key) => {
 			ret += `LABEL ${key}\n`;
-			_.each(directives, (value, directive) => {
+			_.forEach(directives, (value, directive) => {
 				ret += `${directive} ${value}\n`;
 			});
 		});

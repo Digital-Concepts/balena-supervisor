@@ -3,7 +3,7 @@ import { promises as fs, watch } from 'fs';
 import { checkHost as checkNetHost, monitor } from 'network-checker';
 import type { ConnectOptions, MonitorChangeFunction } from 'network-checker';
 import os from 'os';
-import url from 'url';
+import { URL } from 'url';
 
 import * as constants from './lib/constants';
 import { isEEXIST } from './lib/errors';
@@ -30,7 +30,7 @@ async function checkHost(opts: ConnectOptions): Promise<boolean> {
 }
 
 function customMonitor(options: ConnectOptions, fn: MonitorChangeFunction) {
-	return monitor(checkHost, options, fn);
+	monitor(checkHost, options, fn);
 }
 
 export function enableCheck(enable: boolean) {
@@ -38,7 +38,7 @@ export function enableCheck(enable: boolean) {
 }
 
 export async function isVPNActive(): Promise<boolean> {
-	let active: boolean = true;
+	let active = true;
 	try {
 		await fs.lstat(`${constants.vpnStatusPath}/active`);
 	} catch {
@@ -49,6 +49,8 @@ export async function isVPNActive(): Promise<boolean> {
 }
 
 async function vpnStatusInotifyCallback(): Promise<void> {
+	// if the VPN is active then there is no need for the connectivity
+	// check so we pause it
 	isConnectivityCheckPaused = await isVPNActive();
 }
 
@@ -79,15 +81,16 @@ export const startConnectivityCheck = _.once(
 			void vpnStatusInotifyCallback();
 		}
 
-		const parsedUrl = url.parse(apiEndpoint);
-		const port = parseInt(parsedUrl.port!, 10);
+		const parsedUrl = new URL(apiEndpoint);
+		const port =
+			(parsedUrl.port && parseInt(parsedUrl.port, 10)) ||
+			(parsedUrl.protocol === 'https:' ? 443 : 80);
 		const blink = await getBlink();
 
 		customMonitor(
 			{
 				host: parsedUrl.hostname ?? undefined,
-				port: port || (parsedUrl.protocol === 'https' ? 443 : 80),
-				path: parsedUrl.path || '/',
+				port,
 				interval: 10 * 1000,
 			},
 			(connected) => {
@@ -111,7 +114,7 @@ export function enableConnectivityCheck(enable: boolean) {
 	log.debug(`Connectivity check enabled: ${enable}`);
 }
 
-export const connectivityCheckEnabled = async () => isConnectivityCheckEnabled;
+export const connectivityCheckEnabled = () => isConnectivityCheckEnabled;
 
 const IP_REGEX =
 	/^(?:(?:balena|docker|rce|tun)[0-9]+|tun[0-9]+|resin-vpn|lo|resin-dns|supervisor0|balena-redsocks|resin-redsocks|br-[0-9a-f]{12})$/;
