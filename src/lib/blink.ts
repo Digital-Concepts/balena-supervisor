@@ -17,7 +17,7 @@ const DEFAULT_LED_PATH = '/sys/class/leds/led0/brightness';
 export const getBlink = memoizee(
 	async (): Promise<Blink> => {
 		const deviceType = await config.get('deviceType');
-		const isCM4 = deviceType?.toLowerCase().includes('raspberrypi4');
+		const isCM4 = deviceType?.toLowerCase().includes('raspberrypicm4');
 
 		if (isCM4) {
 			for (const ledPath of CM4_LED_PATHS) {
