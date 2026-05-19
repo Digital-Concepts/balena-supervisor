@@ -457,8 +457,31 @@ async function reprovision() {
 		);
 	}
 
+	// BEFORE re-registering so any in-flight target-state apply on the new
+	// identity cannot wipe config.txt against an empty cloud target.
+	await config.set({ initialConfigReported: '' });
+
 	const opts = await config.get('provisioningOptions');
 	await apiHelper.reprovision(balenaApi, opts);
+
+	// Re-report current device config (config.txt, VPN, etc.) to the new
+	// cloud identity. reportInitialEnv re-arms initialConfigReported on
+	// success, which re-opens the apply gate.
+	const { apiEndpoint, deviceId, bootstrapRetryDelay, initialDeviceName } =
+		await config.getMany([
+			'apiEndpoint',
+			'deviceId',
+			'bootstrapRetryDelay',
+			'initialDeviceName',
+		]);
+	if (apiEndpoint && deviceId != null) {
+		await reportInitialConfig(
+			apiEndpoint,
+			deviceId,
+			bootstrapRetryDelay,
+			initialDeviceName ?? undefined,
+		);
+	}
 
 	// Now check if we need to pin the device
 	const pinValue = await config.get('pinDevice');

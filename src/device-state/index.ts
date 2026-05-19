@@ -9,6 +9,7 @@ import * as logger from '../logging';
 
 import * as network from '../network';
 import * as deviceConfig from './device-config';
+import type { ConfigStep } from './device-config';
 
 import * as constants from '../lib/constants';
 import * as dbus from '../lib/dbus';
@@ -80,7 +81,7 @@ type PossibleStepTargets = CompositionStepAction | DeviceStateStepTarget;
 type DeviceStateStep<T extends PossibleStepTargets> =
 	| { action: DeviceStateStepTarget }
 	| CompositionStepT<T extends CompositionStepAction ? T : never>
-	| deviceConfig.ConfigStep;
+	| ConfigStep;
 
 let currentVolatile: DeviceReport = {};
 let maxPollTime: number;
@@ -563,9 +564,24 @@ export const applyTarget = async ({
 				getCurrentState(),
 				TargetState.getTarget({ initial, intermediate }),
 			]);
+
+			// current config to the (possibly new, post-reprovision) cloud
+			// identity, treat current config as the effective target. This
+			// produces only noop device-config steps until the initial
+			// config report completes, preventing an empty cloud-side
+			// target from wiping config.txt mid-reprovision.
+			const { apiEndpoint, initialConfigReported } = await config.getMany([
+				'apiEndpoint',
+				'initialConfigReported',
+			]);
+			const effectiveTarget =
+				!!apiEndpoint && apiEndpoint !== initialConfigReported
+					? currentState
+					: targetState;
+
 			const deviceConfigSteps = await deviceConfig.getRequiredSteps(
 				currentState,
-				targetState,
+				effectiveTarget,
 			);
 			const noConfigSteps = deviceConfigSteps.every(
 				({ action }) => action === 'noop',
