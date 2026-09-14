@@ -23,8 +23,10 @@ import {
 	isBadRequestError,
 	BadRequestError,
 } from '../lib/errors';
+import { setTimeout as delay } from 'timers/promises';
 import { isVPNActive } from '../network';
 import { readVpnLock, writeVpnLock } from '../lib/vpn-lock';
+import { resetRateLimits } from '../device-state/device-config';
 import { setDeviceConfigVariable } from '../api-binder';
 import type { AuthorizedRequest } from '../lib/api-keys';
 import { fromV2TargetState } from '../lib/legacy';
@@ -602,19 +604,31 @@ router.post('/v2/dc/vpn', async (req, res) => {
 		//    reconciliation honours the new desired state even if later steps fail.
 		const lock = await writeVpnLock(enabled);
 
-		// 2. Trigger immediate reconciliation. getVPNSteps will read the lock
-		//    file and emit a setVPNEnabled step if the live service disagrees.
+		// 2. An operator toggle must never be silently swallowed by the hourly
+		//    setVPNEnabled rate limiter (which otherwise downgrades the step to a
+		//    noop and refreshes its own timestamp every retry, deadlocking the
+		//    change until reboot). Clear it before applying, then reconcile.
+		resetRateLimits();
 		deviceState.triggerApplyTarget({ force: true });
 
-		// 3. Reflect to cloud so the dashboard reports the truth. Best-effort:
-		//    if the cloud is unreachable the local state still wins on next sync.
+		// 3. Wait briefly for reconciliation to actually flip the live VPN so we
+		//    report the real applied state instead of an optimistic success.
+		const applied = await waitForVpnState(enabled);
+
+		// 4. Reflect to cloud so the dashboard reports the truth. Best-effort:
+		//    the local lock still wins, but surface the outcome so callers know
+		//    whether the dashboard may now be stale.
+		let cloudReflected = true;
+		let cloudReflectError: string | null = null;
 		try {
 			await setDeviceConfigVariable(
 				'RESIN_SUPERVISOR_VPN_CONTROL',
 				enabled ? 'true' : 'false',
 			);
 		} catch (e: any) {
-			log.warn(`Could not reflect VPN lock to cloud: ${e?.message ?? e}`);
+			cloudReflected = false;
+			cloudReflectError = e?.message ?? String(e);
+			log.warn(`Could not reflect VPN lock to cloud: ${cloudReflectError}`);
 		}
 
 		return res.json({
@@ -623,6 +637,12 @@ router.post('/v2/dc/vpn', async (req, res) => {
 				locked: true,
 				lockedAt: lock.lockedAt,
 				lockedValue: lock.enabled,
+				// `applied` is false when the change is still pending after the
+				// wait budget; the lock guarantees it converges eventually.
+				applied,
+				connected: await isVPNActive(),
+				cloudReflected,
+				cloudReflectError,
 			},
 		});
 	} catch (e: any) {
@@ -633,6 +653,21 @@ router.post('/v2/dc/vpn', async (req, res) => {
 		});
 	}
 });
+
+// Poll the live device-config until SUPERVISOR_VPN_CONTROL reaches the desired
+// value, or give up after a short budget and report the change as pending.
+async function waitForVpnState(enabled: boolean): Promise<boolean> {
+	const desired = enabled ? 'true' : 'false';
+	const deadline = Date.now() + 10_000;
+	do {
+		const conf = await deviceState.getCurrentConfig();
+		if (conf.SUPERVISOR_VPN_CONTROL === desired) {
+			return true;
+		}
+		await delay(500);
+	} while (Date.now() < deadline);
+	return false;
+}
 
 router.get('/v2/cleanup-volumes', async (req: AuthorizedRequest, res) => {
 	const targetState = await applicationManager.getTargetApps();

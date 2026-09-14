@@ -20,13 +20,34 @@ export interface VpnLock {
 	lockedAt: string;
 }
 
+// Fail-closed sentinel: a lock file exists but its intent cannot be trusted.
+// The lock's purpose is to keep the VPN off, so the safe state on any read or
+// parse failure is `enabled: false` — never silently revert to the cloud
+// target, which would re-enable the VPN.
+function failClosed(): VpnLock {
+	return { enabled: false, lockedAt: new Date(0).toISOString() };
+}
+
 export async function readVpnLock(): Promise<VpnLock | null> {
+	let raw: string;
 	try {
-		const raw = await fs.readFile(VPN_LOCK_PATH, 'utf8');
+		raw = await fs.readFile(VPN_LOCK_PATH, 'utf8');
+	} catch (e: any) {
+		if (isENOENT(e)) {
+			// No lock file at all: the cloud target legitimately governs the VPN.
+			return null;
+		}
+		// The lock file is present but unreadable (EIO/EACCES/...). Fail closed.
+		log.error(
+			`vpn-lock read failed (${e?.message ?? e}); failing closed to VPN disabled`,
+		);
+		return failClosed();
+	}
+
+	try {
 		const parsed = JSON.parse(raw);
 		if (typeof parsed?.enabled !== 'boolean') {
-			log.warn(`vpn-lock at ${VPN_LOCK_PATH} is malformed; ignoring`);
-			return null;
+			throw new Error('missing boolean "enabled" field');
 		}
 		return {
 			enabled: parsed.enabled,
@@ -36,11 +57,12 @@ export async function readVpnLock(): Promise<VpnLock | null> {
 					: new Date(0).toISOString(),
 		};
 	} catch (e: any) {
-		if (isENOENT(e)) {
-			return null;
-		}
-		log.warn(`vpn-lock read failed: ${e?.message ?? e}`);
-		return null;
+		// The lock file exists but is corrupt. Fail closed rather than falling
+		// back to the cloud target.
+		log.error(
+			`vpn-lock at ${VPN_LOCK_PATH} is malformed (${e?.message ?? e}); failing closed to VPN disabled`,
+		);
+		return failClosed();
 	}
 }
 
