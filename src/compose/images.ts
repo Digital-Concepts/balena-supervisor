@@ -17,6 +17,7 @@ import {
 import * as LogTypes from '../lib/log-types';
 import * as logger from '../logging';
 import { ImageDownloadBackoffError } from './errors';
+import { isSupervisor } from '../lib/supervisor-metadata';
 
 import type { Service } from './service';
 import { strict as assert } from 'assert';
@@ -407,10 +408,12 @@ export async function cleanImageData(): Promise<void> {
 				// Ignore errors
 			}
 
-			// If the image is in the DB but not available in docker, return it
-			// for removal on the database
+			// If the image is in the DB but not available in docker, or the image belongs to
+			// the supervisor itself, return it for removal on the database
 			return supervisedImages.filter(
-				(image) => !isAvailableInDocker(image, dockerImages),
+				(image) =>
+					!isAvailableInDocker(image, dockerImages) ||
+					isSupervisor(image.appUuid, image.serviceName),
 			);
 		},
 	);
@@ -570,12 +573,14 @@ const inspectByDigest = async (imageName: string) => {
 		.models('image')
 		.where('name', 'like', `%${digest}`)
 		.orWhere({ name: imageName }) // Default to looking for the full image name
+		// markAsSupervised should now keep this to a single row per image, but
+		// order by the most recently written row as a fallback for any
+		// pre-existing duplicates left over from before that fix.
+		.orderBy('id', 'desc')
 		.select();
 
 	for (const img of images) {
 		if (img.dockerImageId != null) {
-			// Assume that all db entries will point to the same dockerImageId, so use
-			// the first one. If this assumption is false, there is a bug with cleanup
 			return await docker.getImage(img.dockerImageId).inspect();
 		}
 	}
@@ -732,9 +737,15 @@ async function markAsSupervised(image: Image): Promise<void> {
 	await db.upsertModel(
 		'image',
 		formattedImage,
-		// TODO: Upsert to new values only when they already match? This is likely a bug
-		// and currently acts like an "insert if not exists"
-		formattedImage,
+		// Match the declared image identity, not the full row: Docker and positional IDs
+		// can change after rebuilds or composition changes, causing duplicates instead of
+		// updates. See balena-os/balena-supervisor#2538.
+		{
+			name: formattedImage.name,
+			appUuid: formattedImage.appUuid,
+			serviceName: formattedImage.serviceName,
+			commit: formattedImage.commit,
+		},
 	);
 }
 

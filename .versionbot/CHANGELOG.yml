@@ -1,4 +1,723 @@
 - commits:
+    - subject: Allow custom configuration for Jetson AGX Thor Developer Kit
+      hash: bab38fcaa4944e49dd9f491278464f590eabd71e
+      body: ""
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Alexandru Costache <alexandru@balena.io>
+        signed-off-by: Alexandru Costache <alexandru@balena.io>
+      author: Alexandru Costache
+      nested: []
+  version: 19.1.4
+  title: ""
+  date: 2026-09-09T20:22:06.962Z
+- commits:
+    - subject: Detect stale image entries when a service is rebuilt under the same name
+      hash: d548e807d7ebc07d903295edb7494b2401408dc4
+      body: >
+        A service rebuilt under the same image name left its database entry
+
+        pointing at the superseded image: the metadata is unchanged, so nothing
+
+        in imagesToSave triggered a saveImage step. That stale dockerImageId was
+
+        then used to recreate the container, most visibly after a reboot.
+
+
+        saveAndRemoveImages() now compares the dockerImageId stored against an
+
+        image name with the id that name currently resolves to on the engine,
+
+        and emits a saveImage step when they diverge. Rows are matched on
+
+        name/appUuid/serviceName/commit - the same key markAsSupervised()
+        upserts
+
+        against - so any row flagged as stale is exactly the row the resulting
+
+        save rewrites, and the condition clears after one step instead of
+
+        re-emitting on every pass.
+
+
+        Fixes #2538
+      footer:
+        Change-type: patch
+        change-type: patch
+        Co-authored-by: Christina Wang <christina@balena.io>
+        co-authored-by: Christina Wang <christina@balena.io>
+      author: Chase Busacker
+      nested: []
+    - subject: Fix markAsSupervised() upserting a new image row on every rebuild
+      hash: 1ac6ee24f4494cae72060bb17d6623023e08675c
+      body: >
+        markAsSupervised() matched an existing `image` row using the entire new
+
+        row, dockerImageId included. Once a rebuild changed the built content
+
+        (same name/appUuid/serviceName/commit, new dockerImageId), the match
+
+        could never succeed, so every rebuild inserted a new row instead of
+
+        updating the old one. This is most visible with local-mode `balena
+        push`,
+
+        which reuses identical name/appId/serviceName/commit metadata on every
+
+        push - the only thing that legitimately changes is dockerImageId.
+
+
+        The same match failed from another direction: the CLI derives
+
+        serviceId/imageId from each service's position in the composition, so
+
+        adding or removing a service shifts those ids for every service after
+
+        it, which also defeated a full-row match.
+
+
+        Left unbounded, stale rows accumulate indefinitely, and
+        inspectByDigest()
+
+        resolves an image name back to a dockerImageId by taking whichever row
+        an
+
+        unordered query happens to return first - which can be a stale one,
+
+        causing the supervisor to (re)create a container against an old image.
+
+
+        - markAsSupervised() now matches on name/appUuid/serviceName/commit
+          instead of the full row, so a rebuild updates in place.
+        - inspectByDigest() orders by id desc as a defensive fallback for any
+          duplicates already on disk before this fix.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Chase Busacker
+      nested: []
+  version: 19.1.3
+  title: ""
+  date: 2026-08-27T19:06:08.717Z
+- commits:
+    - subject: Migrate Flowzone caller off pull_request_target
+      hash: 9a55a6cffe65dabeb10dde7dd47fa21e5a9db86a
+      body: |
+        Reapplies 7f92059c, reverted in 96a908df. The duplicate release issue
+        is fixed in flowzone 23.1.6.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Christina Ying Wang
+      nested: []
+  version: 19.1.2
+  title: ""
+  date: 2026-08-26T21:55:14.868Z
+- commits:
+    - subject: Make the default network config-only for none networking too
+      hash: a5e26a3fe7f7bc5b6802e72e49ddb6679a433750
+      body: |
+        The default network was only created as config-only when every service
+        used host networking, so a service with network_mode: none still got a
+        real bridge with an auto-assigned subnet that can clash with the
+        device's LAN.
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Christina Ying Wang <christina@balena.io>
+        signed-off-by: Christina Ying Wang <christina@balena.io>
+      author: Christina Ying Wang
+      nested: []
+  version: 19.1.1
+  title: ""
+  date: 2026-08-26T20:02:46.684Z
+- commits:
+    - subject: Update helios to v0.26.3
+      hash: 4cad3ee000aed4062e13dae06c560f399ca176f5
+      body: |
+        This version of helios now configures the supervisor to read directly
+        from the socket via the `helios-legacy-takeover` call.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Support unix sockets for api endpoint
+      hash: 2c92fcda42c0f0543dbba73c3f61b8855f9e5280
+      body: |
+        For the API poll/report, the code now checks if the given endpoint
+        points to a file and if so it configures the underlying request library
+        to communicate directly to the socket as if it was the API.
+
+        When used in a supervisor running alongside helios, this allows the
+        supervisor to communicate to the helios API directly via the socket,
+        rather than going through a relay service.
+      footer:
+        Change-type: minor
+        change-type: minor
+      author: Felipe Lalanne
+      nested: []
+  version: 19.1.0
+  title: ""
+  date: 2026-08-25T01:59:14.212Z
+- commits:
+    - subject: Revert "Migrate Flowzone caller off pull_request_target"
+      hash: 96a908dff3742b257e756ec24db5bfd5116726d5
+      body: |
+        This reverts commit 7f92059c72ab48fba547c718241b0a9a613a13ca. Some
+        additional configuration is needed, this change seems to be building
+        multiple balena releases for the supervisor on balenaCloud.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.11
+  title: ""
+  date: 2026-08-24T22:28:15.560Z
+- commits:
+    - subject: Use the 10.114.105.x subnet for supervisor services
+      hash: bb91c0b84aa40f20c286d690cceca0de81138bfd
+      body: |
+        Supervisor services were using the docker default 172.17.x range for
+        their network configuration. This could cause an issue if that range is
+        used for other devices on the same network. This moves to the `10.114.x`
+        subnet, mirroring what we do for the `supervisor0` network, which should
+        reduce the probability of clashing.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.10
+  title: ""
+  date: 2026-08-24T20:20:57.795Z
+- commits:
+    - subject: Migrate Flowzone caller off pull_request_target
+      hash: 7f92059c72ab48fba547c718241b0a9a613a13ca
+      body: ""
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Christina Ying Wang
+      nested: []
+  version: 19.0.9
+  title: ""
+  date: 2026-08-23T17:17:12.212Z
+- commits:
+    - subject: "compose: do not sweep overlay extension volumes"
+      hash: 7bd5dd8c23656d0b7fb91c2fa07df96ce30329e4
+      body: >
+        When a user calls /v2/cleanup-volumes it may cleanup extension
+
+        volumes that are used for kernel overrides and may be needed
+
+        for rollbacks. It does not respect update locks either.
+
+
+        Overlay extension volumes are owned by the OS and are deliberately left
+
+        container-less between an overlay being superseded and the OS reaping
+        them at the HUP commit
+
+        boundary, because that is the state a rollback needs to find them in.
+
+
+        This commit skips volumes labelled io.balena.image.class=overlay,
+
+        matching the ownership check the OS sweep already applies.
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Alex Gonzalez <alexg@balena.io>
+        signed-off-by: Alex Gonzalez <alexg@balena.io>
+      author: Alex Gonzalez
+      nested: []
+    - subject: "compose: only treat appId-prefixed volumes as supervisor-managed"
+      hash: 1cafb942a4f7793d4ab18565144d568753fd9a7b
+      body: >
+        The supervisor infers volume ownership solely from the docker name, so
+        that
+
+        check must be exact. Right now extension managed volumes are incorrectly
+
+        identified as supervisor managed.
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Alex Gonzalez <alexg@balena.io>
+        signed-off-by: Alex Gonzalez <alexg@balena.io>
+      author: Alex Gonzalez
+      nested: []
+  version: 19.0.8
+  title: ""
+  date: 2026-08-11T14:25:01.721Z
+- commits:
+    - subject: fix documentation GET host-config json
+      hash: 688a3661dd2eedecc338cd064ee7fac59cccd55b
+      body: ""
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Yann CARDAILLAC <yann.cardaillac@balena.io>
+        signed-off-by: Yann CARDAILLAC <yann.cardaillac@balena.io>
+      author: Yann CARDAILLAC
+      nested: []
+  version: 19.0.7
+  title: ""
+  date: 2026-08-10T21:55:13.231Z
+- commits:
+    - subject: Update debian docker image dependency to stable-slim
+      hash: 3bfa5479a14bd9060833b7603de48b61e4bd60ce
+      body: |
+        For some reason `bookwork-slim` is no longer generating linux/arm/v5
+        images which is causing supervisor releases to fail to build
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.6
+  title: ""
+  date: 2026-08-10T21:04:24.053Z
+- commits:
+    - subject: Update helios to v0.25.28
+      hash: dd1dd9434064f225b652c67d4316b0db0c3a7411
+      body: |
+        The changes in balena-io/helios#149 cleanup the takeover breadcrumb in
+        case of a failed takeover check to avoid unnecessary restarts.
+      footer:
+        Change-type: patch
+        change-type: patch
+        Relates-to: balena-io/helios#149
+        relates-to: balena-io/helios#149
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.5
+  title: ""
+  date: 2026-08-05T00:52:07.704Z
+- commits:
+    - subject: Add kill step for handover services without target
+      hash: c4309a06144c49592447d538081bec502610d6b3
+      body: |
+        This makes sure a leftover container from a handover gets removed
+        instead of causing the supervisor to get stuck in a `noop` loop
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Write regression test for interrupted handover issue
+      hash: 47efdbd5dfae0163ece6e804d962916d1abe090e
+      body: |
+        A handover interrupted by a supervisor restart results in the supervisor
+        getting stuck in a `noop` loop after the restart. This is due to the
+        supervisor seeing both the old and new handover containers as part of
+        the current state and not being able to tell which one to kill
+
+        This commit adds a test for this bug
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.4
+  title: ""
+  date: 2026-07-31T22:59:58.550Z
+- commits:
+    - subject: Use `/tmp` as host runtime dir
+      hash: 58f6b5ec826ec26a18185e938ee0aa6368828b6b
+      body: |
+        The path used as the directory for the `local` volume driver needs to
+        exist before creating the container. On reboot, if helios starts before
+        the supervisor, the `/tmp/balena-supervisor` path won't exist resulting
+        in the container failing to start before setting the restart policy and
+        will never be started again.
+
+        This makes `/tmp` the host runtime directory, preventing the issue. Note
+        that this also means that some paths that lived under
+        `/tmp/balena-supervisor` now will be created under `/tmp`, e.g.
+        `/tmp/helios.sock`, `/tmp/balenahup`
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.3
+  title: ""
+  date: 2026-07-30T22:41:29.376Z
+- commits:
+    - subject: Set core-next restart policy to always
+      hash: 57aeafd14a02fb9d3db7c0fc6cd9119bf54145a6
+      body: |
+        Without the service the supervisor is rendered useless so it should
+        always restart.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Do not send socat logs to the API
+      hash: 59f9470b2c64734a1f9e60eef6220bc8896a09ff
+      body: |
+        They are not really useful. If helios crashes the core-next error
+        logs should tell us why
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Update helios to 0.25.26
+      hash: 5f2f9290b1c85daa8235545e0e432bfa6cb6ef61
+      body: >
+        This brings several takeover process improvements from
+        balena-io/helios#144
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.2
+  title: ""
+  date: 2026-07-29T20:52:43.923Z
+- commits:
+    - subject: Update helios to v0.25.24
+      hash: 512b2f439613f4ac3ba0a71aca6b626cb2f8842b
+      body: |
+        Includes:
+        * Improve storage of published ports
+        * Support for additional compose properties
+        * Reduce log level for local API 5xx responses
+      footer:
+        Change-type: patch
+        change-type: patch
+        Signed-off-by: Ken Bannister <kb2ma@runbox.com>
+        signed-off-by: Ken Bannister <kb2ma@runbox.com>
+      author: Ken Bannister
+      nested: []
+  version: 19.0.1
+  title: ""
+  date: 2026-07-27T21:22:03.354Z
+- commits:
+    - subject: Allow to configure logging per service with `BALENA_LOGS_LEVEL` env var
+      hash: ea87039b9c4b16e87c76e8a49632755dec9f71ea
+      body: |
+        Services `core-next` and `service-relay` are configured by default
+        with `BALENA_LOGS_LEVEL: error`.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Add `core-next` and `service-relay` services to composition.
+      hash: cedf0c6dc29938ba8fa4c9749ae835ab1ea2560d
+      body: |
+        These services enable async host OS updates. When the release is
+        installed, the `core-next` takes over the running supervisor and
+        intercepts all communications between the supervisor and the API and
+        other services, allowing the progressive take over of new supervisor
+        features.
+      footer:
+        Change-type: major
+        change-type: major
+      author: Felipe Lalanne
+      nested: []
+    - subject: Remove the uninstall of helios overrides
+      hash: a7ed71f58d69c14f455c5f320dd7e28c85e6485d
+      body: |
+        This reverts commit e5c66d90586f127fee9713445dcc9aa868131c57.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 19.0.0
+  title: ""
+  date: 2026-07-20T14:22:35.878Z
+- commits:
+    - subject: Clean up supervisor images in the database
+      hash: 4b7d733e4c4d0c78284c4090bb10ec82e4ba2df5
+      body: |
+        On supervisor v18.2.0, we renamed the supervisor service to `core` in
+        the [supervisor
+        composition](https://github.com/balena-os/balena-supervisor/blob/v18.2.0/docker-compose.yml). That change also updated the [isSupervisor](https://github.com/balena-os/balena-supervisor/blob/v18.2.0/src/lib/supervisor-metadata.ts#L34) filter in the supervisor-metadata module.
+
+        The problem is that when updating to v18.2.0, the following race
+        condition may happen
+
+        - The device is on v17.8.5, and the user updates the supervisor on the dashboard to v18.2.0. The target state changes
+        - Before the update-balena-supervisor script can run, supervisor v17.8.5,
+          sees the new `core` service which it not part of its filter list and
+          creates the service and image on the database.
+        - Eventually supervisor v18.2.0 runs, it knows to filter `core` and tries
+          to remove the image, but its using the image itself, so it gets stuck
+          in a loop trying to remove the image and failing.
+
+        This adds a `isSupervisor` check to the initial application manager
+        image cleanup to avoid the issue happening altogether.
+
+        If a customer is stuck in the delete loop, updating to this supervisor
+        should fix it.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 18.2.2
+  title: ""
+  date: 2026-07-06T19:00:57.589Z
+- commits:
+    - subject: Clarify documentation on device tags API
+      hash: 29b23c9f867f2ef2b50f70966e97eeee36e2b503
+      body: |
+        Add titles to remove confusion in the device tags API docs section
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Jonathan Berger
+      nested: []
+  version: 18.2.1
+  title: ""
+  date: 2026-07-02T16:03:57.956Z
+- commits:
+    - subject: Rename the supervisor service to core on the commposition
+      hash: 2c6627b369f43fffdd56eedd20c7f3a88b6720a6
+      body: |
+        This will allow it to show on the dashboard with that name in the
+        Supervisor services table.
+      footer:
+        Change-type: minor
+        change-type: minor
+      author: Felipe Lalanne
+      nested: []
+    - subject: Report the supervisor main service to backend
+      hash: 14e7f97ea15d6699cd778ad573246932aec5d550
+      body: |
+        The supervisor cannot update itself so its core service is removed from
+        the target state before applying steps. However we do want the service
+        to be reported so it shows up in the new `Supervisor services` table on
+        the dashboard.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 18.2.0
+  title: ""
+  date: 2026-06-22T20:17:31.186Z
+- commits:
+    - subject: "Docs: clarify behavior for `PATCH /v2/device/tags`"
+      hash: 13881bed43f564b6168c64f78db4c15d4fdd308c
+      body: |
+        https://balena.fibery.io/Work/Project/1031
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Pagan Gazzard
+      nested: []
+  version: 18.1.2
+  title: ""
+  date: 2026-06-22T11:43:14.014Z
+- commits:
+    - subject: Pass correct value for restart policy 'no'
+      hash: 57f300e957f41776ab1ffa24f789a4d4332afe2a
+      body: |
+        The supervisor was passing an empty string '' when receiving
+        `restart_policy: no`, this now passes the direct name which is required
+        by engine v25
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 18.1.1
+  title: ""
+  date: 2026-06-05T18:56:17.011Z
+- commits:
+    - subject: Remove any overrides created by helios and restore service
+      hash: e5c66d90586f127fee9713445dcc9aa868131c57
+      body: |
+        This restores single-service operation for those users that already
+        updated to v18.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Revert "Add `helios` service to composition"
+      hash: 80d77392a363d9f2e60436b69d2f1fd01d28b73c
+      body: |
+        We are re-working our release strategy around the new multi-container
+        supervisor after some initial customer concerns. This removes the new
+        services from the supervisor release composition, reverting
+        commit e62c021b0c065b8f66164fe661754d7f796206c2.
+      footer:
+        Change-type: minor
+        change-type: minor
+      author: Felipe Lalanne
+      nested: []
+  version: 18.1.0
+  title: ""
+  date: 2026-06-03T16:22:13.155Z
+- commits:
+    - subject: Add `helios` service to composition
+      hash: e62c021b0c065b8f66164fe661754d7f796206c2
+      body: >
+        Helios is the experimental supervisor replacement. The service acts as
+
+        a proxy for the existing supervisor and will slowly take over supervisor
+        features
+
+
+        This also adds a `helios-api` service to listen on port 48484
+
+
+        While this should not break any of the interfaces, it is an important
+
+        change so it has a new major version.
+      footer:
+        Change-type: major
+        change-type: major
+      author: Felipe Lalanne
+      nested: []
+    - subject: Restrict supervisor API listen address when overriding port
+      hash: 0af5da36f3dfdfe0be0bce9d85deb1c0c2a7409f
+      body: |
+        The supervisor would listen to the override port on all interfaces,
+        however this would unnecessarily expose the port to the local network.
+        We now listen to requests only on the supervisor0 interface to admit
+        traffic from containers only.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Use RESIN_BOARD_REV OS release info as a fallback
+      hash: 070ad7c0deed893ffdbcbe246822e55f5ff90bdc
+      body: |
+        This is needed for older OS versions where `BALENA_BOARD_REV` is not
+        available on `/etc/os-release`
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Add BALENA_HOST_OS_BUILD as environment variable
+      hash: ebda244c295cc2acb69b7ea306bd9383f0411760
+      body: |
+        This is added when the `board-rev` feature is enabled. It's a more
+        generic name over `BALENA_HOST_OS_BOARD_REV` and will replace it
+        eventually
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Add firewall configurations for the override port
+      hash: fa3fd3d15c323e73dd257ed73fd1c0cb7c13528f
+      body: |
+        When the override port is set, the firewall is configured to only allow
+        traffic on `supervisor0` interface for that port. In that case a new
+        chain `BALENA-SUPERVISOR` is added to `DOCKER-USER`, that chain blocks
+        access to the regular listen port from any interface other than
+        resin-vpn when in non-local-mode and allows any traffic on local-mode.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+    - subject: Allow overriding apiEndpoint from a database field
+      hash: 67d479e05625d2fbea193498fc58ffc64c091a73
+      body: |
+        This is an experimental change to allow an external service to intercept
+        API calls of the supervisor as a potential path for migration
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Felipe Lalanne
+      nested: []
+  version: 18.0.0
+  title: ""
+  date: 2026-05-27T16:24:12.773Z
+- commits:
+    - subject: Convert extra_hosts separator from `=` to `:`
+      hash: dc636b5521982596e868c866074d92706b86bb11
+      body: |
+        Engine expects `:` but compose-go from compose-parser
+        outputs `=`.
+      footer:
+        Change-type: patch
+        change-type: patch
+        Relates-to: https://github.com/balena-io-modules/balena-compose-parser/pull/28
+        relates-to: https://github.com/balena-io-modules/balena-compose-parser/pull/28
+      author: Christina Ying Wang
+      nested: []
+  version: 17.8.5
+  title: ""
+  date: 2026-05-26T20:41:50.015Z
+- commits:
+    - subject: Remove debugging-supervisor docs in favor of moving directly to docs
+      hash: d506754539c953eb004e11542848963b43f70af1
+      body: ""
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Matthew Yarmolinsky
+      nested: []
+  version: 17.8.4
+  title: ""
+  date: 2026-05-21T20:35:06.680Z
+- commits:
+    - subject: Remove update-locking docs in favor of moving them directly to the docs
+      hash: 705df2c966d90a946acb915391e57a25894a83d8
+      body: ""
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Matthew Yarmolinsky
+      nested: []
+  version: 17.8.3
+  title: ""
+  date: 2026-05-20T20:14:30.054Z
+- commits:
+    - subject: Pin back to Node 22 / Alpine 3.22
+      hash: 063cfc03f7aefe20cbcfde3bcb19db72b22a5a00
+      body: >
+        Node 24's V8 engine has issues with rpi/armv6 arch, throwing
+
+        `Fatal error in , line 0 unreachable code`.
+
+
+        We still support RPi Zero devices in production, roughly 3k
+
+        at time of this commit.
+
+
+        Revert RegExp.escape to lodash escapeRegExp as it isn't useable in Node
+        22.
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: Christina Ying Wang
+      nested: []
+  version: 17.8.2
+  title: ""
+  date: 2026-05-19T18:28:44.611Z
+- commits:
+    - subject: Update systeminformation to v5.31.6 [SECURITY]
+      hash: db278c1c91d4948d737108a9fd97f742640dc341
+      body: |
+        Update systeminformation from 5.31.4 to 5.31.6
+      footer:
+        Change-type: patch
+        change-type: patch
+      author: balena-renovate[bot]
+      nested: []
+  version: 17.8.1
+  title: ""
+  date: 2026-05-13T17:54:55.662Z
+- commits:
     - subject: Add a `PATCH /v2/device/tags` endpoint to tell the supervisor device
         tags to report
       hash: ff0dca884b25711e34bd3ce29bed5da330bbf006

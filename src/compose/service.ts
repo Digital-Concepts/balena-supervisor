@@ -14,6 +14,7 @@ import log from '../lib/supervisor-console';
 import * as conversions from '../lib/conversions';
 import { checkInt } from '../lib/validation';
 import { InternalInconsistencyError } from '../lib/errors';
+import { LogLevel } from '../logging/types';
 
 import type { EnvVarObject } from '../types';
 import type {
@@ -221,6 +222,15 @@ class ServiceImpl implements Service {
 
 		if (typeof config.dnsSearch === 'string') {
 			config.dnsSearch = [config.dnsSearch];
+		}
+
+		// Engine expects`host:ip` form, but the compose spec also accepts `host=ip`
+		// and compose-go outputs as `host=ip`. Normalise the separator to `:` so
+		// that either input format produces a valid container config.
+		if (Array.isArray(config.extraHosts)) {
+			config.extraHosts = config.extraHosts.map((entry) =>
+				entry.replace('=', ':'),
+			);
 		}
 
 		// Special case network modes
@@ -1175,6 +1185,18 @@ class ServiceImpl implements Service {
 			`${updateLock.lockPath(appId, serviceName)}:/tmp/resin`,
 			`${updateLock.lockPath(appId, serviceName)}:/tmp/balena`,
 		];
+	}
+
+	public logLevel(): LogLevel {
+		switch (this.config.environment['BALENA_LOGS_LEVEL']) {
+			case 'none':
+				return LogLevel.None;
+			case 'err':
+			case 'error':
+				return LogLevel.Err;
+			default:
+				return LogLevel.Info;
+		}
 	}
 }
 

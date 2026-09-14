@@ -43,6 +43,7 @@ import type {
 import { isRebootBreadcrumbSet } from '../lib/reboot';
 import { getBootTime } from '../lib/fs-utils';
 import * as extraFirmware from '../lib/extra-firmware';
+import { isSupervisor } from '../lib/supervisor-metadata';
 
 type ApplicationManagerEventEmitter = StrictEventEmitter<
 	EventEmitter,
@@ -774,11 +775,27 @@ function saveAndRemoveImages(
 
 			// The image is not on the database but we know it exists on the
 			// engine because we could find it through inspectByName
-			const isAvailableOnTheEngine = !!targetImageDockerIds[targetImage.name];
+			const engineDockerImageId = targetImageDockerIds[targetImage.name];
+			const isAvailableOnTheEngine = !!engineDockerImageId;
+
+			// The stored Docker ID can become stale in the database when rebuilt under the same
+			// name (e.g. local mode push), causing the stale image to be used for recreation.
+			// See balena-os/balena-supervisor#2538.
+			const isStaleInDb =
+				isAvailableOnTheEngine &&
+				availableImages.some(
+					(availableImage) =>
+						availableImage.name === targetImage.name &&
+						availableImage.appUuid === targetImage.appUuid &&
+						availableImage.serviceName === targetImage.serviceName &&
+						availableImage.commit === targetImage.commit &&
+						availableImage.dockerImageId !== engineDockerImageId,
+				);
 
 			return (
 				(isActuallyAvailable && isNotSaved) ||
-				(!isActuallyAvailable && isAvailableOnTheEngine)
+				(!isActuallyAvailable && isAvailableOnTheEngine) ||
+				isStaleInDb
 			);
 		},
 	);
@@ -929,7 +946,8 @@ export async function getState(): Promise<AppsReport> {
 	const [services, images, targetApps] = await Promise.all([
 		serviceManager.getState(),
 		imageManager.getState(),
-		dbFormat.getApps(),
+		// query target apps including the supervisor
+		dbFormat.getApps(false),
 	]);
 
 	type ServiceInfo = {
@@ -983,6 +1001,16 @@ export async function getState(): Promise<AppsReport> {
 				continue;
 			}
 
+			// The supervisor service will not be on the current services list, so
+			// we manufacture its state when reporting
+			const serviceStatus =
+				appUuid != null && isSupervisor(appUuid, serviceName)
+					? { status: 'Running' }
+					: {
+							status: 'Downloading',
+							download_progress: 0,
+						};
+
 			// add target images that are pending downnload
 			stateFromImages.push({
 				appId,
@@ -990,8 +1018,7 @@ export async function getState(): Promise<AppsReport> {
 				image: imageName!,
 				commit,
 				serviceName,
-				status: 'Downloading',
-				download_progress: 0,
+				...serviceStatus,
 			});
 		}
 	}

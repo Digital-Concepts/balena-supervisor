@@ -87,8 +87,10 @@ class AppImpl implements App {
 			this.networks.find((n) => n.name === 'default') == null &&
 			isTargetState
 		) {
-			const allHostNetworking = this.services.every(
-				(svc) => svc.config.networkMode === 'host',
+			const allHostOrNoneNetworking = this.services.every(
+				(svc) =>
+					svc.config.networkMode === 'host' ||
+					svc.config.networkMode === 'none',
 			);
 			// We always want a default network
 			this.networks.push(
@@ -101,7 +103,7 @@ class AppImpl implements App {
 					// aren't using it, to minimize chances of host-Docker address conflicts.
 					// If config_only is specified, the network is created and available in Docker
 					// by name and config only, and no actual networking setup occurs.
-					{ config_only: allHostNetworking },
+					{ config_only: allHostOrNoneNetworking },
 				),
 			);
 		}
@@ -1015,6 +1017,7 @@ class AppImpl implements App {
 
 	public static async fromTargetState(
 		app: targetStateCache.DatabaseApp,
+		excludeSupervisor = true,
 	): Promise<App> {
 		const jsonVolumes = JSON.parse(app.volumes) ?? {};
 		const volumes = Object.keys(jsonVolumes).map((name) => {
@@ -1062,47 +1065,49 @@ class AppImpl implements App {
 			svc.labels?.['io.balena.image.store'] == null ||
 			svc.labels['io.balena.image.store'] === 'data';
 
+		let servicesToConstruct = JSON.parse(app.services ?? []).filter(
+			// For the host app, `io.balena.image.*` labels indicate special way
+			// to install the service image, so we ignore those we don't know how to
+			// handle yet. If a user app adds the labels, we treat those services
+			// just as any other
+			(svc: ServiceComposeConfig) =>
+				!app.isHost || (isService(svc) && isDataStore(svc)),
+		);
+
+		// Ignore the supervisor service unless specifically requested, since the supervisor
+		// cannot update itself
+		if (excludeSupervisor) {
+			servicesToConstruct = servicesToConstruct.filter(
+				(svc: ServiceComposeConfig) => !isSupervisor(app.uuid, svc.serviceName),
+			);
+		}
+
 		// In the db, the services are an array, but here we switch them to an
 		// object so that they are consistent
 		const services: Service[] = await Promise.all(
-			JSON.parse(app.services ?? [])
-				.filter(
-					// For the host app, `io.balena.image.*` labels indicate special way
-					// to install the service image, so we ignore those we don't know how to
-					// handle yet. If a user app adds the labels, we treat those services
-					// just as any other
-					(svc: ServiceComposeConfig) =>
-						!app.isHost || (isService(svc) && isDataStore(svc)),
-				)
-				// Ignore the supervisor service itself from the target state for now
-				// until the supervisor can update itself
-				.filter(
-					(svc: ServiceComposeConfig) =>
-						!isSupervisor(app.uuid, svc.serviceName),
-				)
-				.map(async (svc: ServiceComposeConfig) => {
-					// Try to fill the image id if the image is downloaded
-					let imageInfo: ImageInspectInfo | undefined;
-					try {
-						imageInfo = await imageManager.inspectByName(svc.image);
-					} catch (e: unknown) {
-						if (!isNotFoundError(e)) {
-							throw e;
-						}
+			servicesToConstruct.map(async (svc: ServiceComposeConfig) => {
+				// Try to fill the image id if the image is downloaded
+				let imageInfo: ImageInspectInfo | undefined;
+				try {
+					imageInfo = await imageManager.inspectByName(svc.image);
+				} catch (e: unknown) {
+					if (!isNotFoundError(e)) {
+						throw e;
 					}
+				}
 
-					const thisSvcOpts = {
-						...svcOpts,
-						imageInfo,
-						serviceName: svc.serviceName,
-					};
+				const thisSvcOpts = {
+					...svcOpts,
+					imageInfo,
+					serviceName: svc.serviceName,
+				};
 
-					// FIXME: Typings for DeviceMetadata
-					return await Service.fromComposeObject(
-						svc,
-						thisSvcOpts as unknown as DeviceMetadata,
-					);
-				}),
+				// FIXME: Typings for DeviceMetadata
+				return await Service.fromComposeObject(
+					svc,
+					thisSvcOpts as unknown as DeviceMetadata,
+				);
+			}),
 		);
 
 		return new AppImpl(
