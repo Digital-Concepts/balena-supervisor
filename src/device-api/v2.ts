@@ -26,6 +26,7 @@ import {
 import { setTimeout as delay } from 'timers/promises';
 import { isVPNActive } from '../network';
 import { readVpnLock, writeVpnLock } from '../lib/vpn-lock';
+import { vpnEnableAllowed } from '../lib/vpn-control-key';
 import { resetRateLimits } from '../device-state/device-config';
 import { setDeviceConfigVariable } from '../api-binder';
 import type { AuthorizedRequest } from '../lib/api-keys';
@@ -600,6 +601,19 @@ router.post('/v2/dc/vpn', async (req, res) => {
 	}
 
 	try {
+		if (
+			enabled &&
+			!(await vpnEnableAllowed(
+				req.get('X-DC-VPN-Control'),
+				await serviceManager.getAll(),
+			))
+		) {
+			return res.status(403).json({
+				status: 'failed',
+				message: 'VPN enable requires dc-vpn-control',
+			});
+		}
+
 		// 1. Lock file is the local authority; write it first so any subsequent
 		//    reconciliation honours the new desired state even if later steps fail.
 		const lock = await writeVpnLock(enabled);

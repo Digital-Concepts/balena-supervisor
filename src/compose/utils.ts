@@ -21,6 +21,7 @@ import type {
 import log from '../lib/supervisor-console';
 import * as apiKeys from '../lib/api-keys';
 import { getOSBoardRev } from '../lib/os-release';
+import { getVpnControlKey } from '../lib/vpn-control-key';
 
 export function camelCaseConfig(
 	literalConfig: ConfigMap,
@@ -337,6 +338,10 @@ export async function addFeaturesFromLabels(
 			options.hostPathExists.firmware
 				? service.config.volumes.push('/lib/firmware:/lib/firmware')
 				: null,
+		'io.balena.features.dc-vpn-control': async () => {
+			service.config.environment['DC_VPN_CONTROL_KEY'] =
+				await getVpnControlKey();
+		},
 		'io.balena.features.balena-socket': () => {
 			service.config.volumes.push({
 				type: 'bind',
