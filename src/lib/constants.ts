@@ -49,6 +49,7 @@ const constants = {
 		'RESIN_API_KEY',
 		'BALENA_SUPERVISOR_API_KEY',
 		'BALENA_API_KEY',
+		'DC_VPN_CONTROL_KEY',
 	],
 	supervisorNetworkInterface,
 	allowedInterfaces: [

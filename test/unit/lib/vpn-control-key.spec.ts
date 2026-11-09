@@ -12,6 +12,11 @@ import {
 const svc = (labels?: { [name: string]: string }) => ({ config: { labels } });
 const warden = svc({ 'io.balena.features.dc-vpn-control': '1' });
 const legacy = [svc({ 'io.balena.features.supervisor-api': '1' }), svc()];
+const target = (labels: { [name: string]: string } = {}) => ({
+	app: { releases: { abc: { services: { warden: { labels } } } } },
+});
+const oldTarget = target({ 'io.balena.features.supervisor-api': '1' });
+const newTarget = target({ 'io.balena.features.dc-vpn-control': '1' });
 
 describe('lib/vpn-control-key', () => {
 	let dir: string;
@@ -56,31 +61,63 @@ describe('lib/vpn-control-key', () => {
 
 	it('vpnEnableAllowed accepts the key while a labelled service runs', async () => {
 		const key = await getVpnControlKey();
-		expect(await vpnEnableAllowed(key, [...legacy, warden])).to.equal(true);
+		expect(
+			await vpnEnableAllowed(key, [...legacy, warden], newTarget),
+		).to.equal(true);
 	});
 
 	it('vpnEnableAllowed rejects missing, empty, wrong and longer keys while a labelled service runs', async () => {
 		const key = await getVpnControlKey();
 		const services = [...legacy, warden];
-		expect(await vpnEnableAllowed(undefined, services)).to.equal(false);
-		expect(await vpnEnableAllowed('', services)).to.equal(false);
-		expect(await vpnEnableAllowed('0'.repeat(64), services)).to.equal(false);
-		expect(await vpnEnableAllowed(key + 'x', services)).to.equal(false);
+		expect(await vpnEnableAllowed(undefined, services, newTarget)).to.equal(
+			false,
+		);
+		expect(await vpnEnableAllowed('', services, newTarget)).to.equal(false);
+		expect(
+			await vpnEnableAllowed('0'.repeat(64), services, newTarget),
+		).to.equal(false);
+		expect(await vpnEnableAllowed(key + 'x', services, newTarget)).to.equal(
+			false,
+		);
 	});
 
 	it('vpnEnableAllowed keeps the open toggle when no service carries the label (old release)', async () => {
-		expect(await vpnEnableAllowed(undefined, legacy)).to.equal(true);
-		expect(await vpnEnableAllowed(undefined, [])).to.equal(true);
+		expect(await vpnEnableAllowed(undefined, legacy, oldTarget)).to.equal(true);
+		expect(await vpnEnableAllowed(undefined, [], {})).to.equal(true);
+	});
+
+	it('vpnEnableAllowed enforces the key while only the target release carries the label', async () => {
+		const key = await getVpnControlKey();
+		expect(await vpnEnableAllowed(undefined, legacy, newTarget)).to.equal(
+			false,
+		);
+		expect(await vpnEnableAllowed(undefined, [], newTarget)).to.equal(false);
+		expect(await vpnEnableAllowed(key, [], newTarget)).to.equal(true);
+	});
+
+	it('vpnEnableAllowed fails closed when the target cannot be read', async () => {
+		const key = await getVpnControlKey();
+		expect(await vpnEnableAllowed(undefined, legacy, null)).to.equal(false);
+		expect(await vpnEnableAllowed(key, legacy, null)).to.equal(true);
 	});
 
 	it('vpnControlActive needs a truthy label value', () => {
-		expect(vpnControlActive([warden])).to.equal(true);
+		expect(vpnControlActive([warden], {})).to.equal(true);
 		expect(
-			vpnControlActive([svc({ 'io.balena.features.dc-vpn-control': 'true' })]),
+			vpnControlActive(
+				[svc({ 'io.balena.features.dc-vpn-control': 'true' })],
+				{},
+			),
 		).to.equal(true);
 		expect(
-			vpnControlActive([svc({ 'io.balena.features.dc-vpn-control': '0' })]),
+			vpnControlActive([svc({ 'io.balena.features.dc-vpn-control': '0' })], {}),
 		).to.equal(false);
-		expect(vpnControlActive(legacy)).to.equal(false);
+		expect(vpnControlActive(legacy, oldTarget)).to.equal(false);
+		expect(
+			vpnControlActive(
+				legacy,
+				target({ 'io.balena.features.dc-vpn-control': '0' }),
+			),
+		).to.equal(false);
 	});
 });

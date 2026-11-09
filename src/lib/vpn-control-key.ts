@@ -9,13 +9,21 @@ import { checkTruthy } from './validation';
 // DC vendor extension: a secret injected only into services that carry the
 // `io.balena.features.dc-vpn-control` label. While such a service runs,
 // enabling the VPN through the device API requires presenting it, so only that
-// service can switch it on. Releases without the label keep the open toggle.
+// service can switch it on. The restriction also holds while the target
+// release carries the label (e.g. that service is being recreated), and when
+// the target cannot be read. Releases without the label keep the open toggle.
 // The key persists in the supervisor's private /data volume and stays stable
 // across restarts so injecting it never recreates the service.
 
 export const VPN_CONTROL_LABEL = 'io.balena.features.dc-vpn-control';
 
 type LabelledService = { config: { labels?: { [name: string]: string } } };
+type Labels = { labels?: { [name: string]: string } };
+type TargetLike = {
+	[uuid: string]: {
+		releases?: { [commit: string]: { services?: { [name: string]: Labels } } };
+	};
+};
 
 const KEY_PATTERN = /^[0-9a-f]{64}$/;
 
@@ -50,18 +58,33 @@ export function getVpnControlKey(): Promise<string> {
 	return pending;
 }
 
-/** True when a running service carries the dc-vpn-control label. */
-export function vpnControlActive(services: LabelledService[]): boolean {
-	return services.some((s) =>
-		checkTruthy(s.config.labels?.[VPN_CONTROL_LABEL]),
+const labelled = (labels?: { [name: string]: string }) =>
+	checkTruthy(labels?.[VPN_CONTROL_LABEL]);
+
+/**
+ * True when a running service or a service of the target release carries the
+ * dc-vpn-control label; a target that could not be read (null) counts as true.
+ */
+export function vpnControlActive(
+	services: LabelledService[],
+	target: TargetLike | null,
+): boolean {
+	if (target === null || services.some((s) => labelled(s.config.labels))) {
+		return true;
+	}
+	return Object.values(target).some((app) =>
+		Object.values(app.releases ?? {}).some((release) =>
+			Object.values(release.services ?? {}).some((svc) => labelled(svc.labels)),
+		),
 	);
 }
 
 export async function vpnEnableAllowed(
 	header: string | undefined,
 	services: LabelledService[],
+	target: TargetLike | null,
 ): Promise<boolean> {
-	if (!vpnControlActive(services)) {
+	if (!vpnControlActive(services, target)) {
 		return true;
 	}
 	if (!header) {

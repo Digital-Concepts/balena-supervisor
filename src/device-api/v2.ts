@@ -606,6 +606,8 @@ router.post('/v2/dc/vpn', async (req, res) => {
 			!(await vpnEnableAllowed(
 				req.get('X-DC-VPN-Control'),
 				await serviceManager.getAll(),
+				// An unreadable target fails closed.
+				await applicationManager.getTargetApps().catch(() => null),
 			))
 		) {
 			return res.status(403).json({
